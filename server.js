@@ -19,6 +19,7 @@ const AZURE_VOICES = {
   'bg-BG': 'bg-BG-BorislavNeural',
   'tr-TR': 'tr-TR-AhmetNeural',
   'el-GR': 'el-GR-AthinaNeural',
+  'nl-NL': 'nl-NL-ColetteNeural',
   'fr-FR': 'fr-FR-DeniseNeural',
   'en-US': 'en-US-JennyNeural',
   'de-DE': 'de-DE-KatjaNeural',
