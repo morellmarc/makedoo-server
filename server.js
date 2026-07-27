@@ -55,6 +55,7 @@ async function azureTTS(text, languageCode, speakingRate) {
   const rate = speakingRate < 1 ? '-10%' : '+0%';
   const ssml = `<speak version='1.0' xml:lang='${languageCode}'>
     <voice name='${voice}'>
+      <silence type='leading' value='0ms'/>
       <prosody rate='${rate}'>${text}</prosody>
     </voice>
   </speak>`;
