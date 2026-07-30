@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -10,6 +12,7 @@ const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const AZURE_KEY = process.env.AZURE_SPEECH_KEY;
 const AZURE_REGION = 'northeurope';
 const PORT = process.env.PORT || 3000;
+const COUNTER_FILE = path.join(__dirname, 'visits.json');
 
 // Voix Azure Neural par langue
 const AZURE_VOICES = {
@@ -31,6 +34,27 @@ const AZURE_VOICES = {
 // ── Santé ─────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'makedoo-api', version: '2.0.0', tts: 'azure+google' });
+});
+
+// ── Compteur de visites ──────────────────────────────────────────
+function readVisits() {
+  try { return JSON.parse(fs.readFileSync(COUNTER_FILE, 'utf8')); }
+  catch (e) { return { count: 0 }; }
+}
+function writeVisits(data) {
+  try { fs.writeFileSync(COUNTER_FILE, JSON.stringify(data)); } catch (e) {}
+}
+
+app.get('/visit', (req, res) => {
+  const data = readVisits();
+  data.count = (data.count || 0) + 1;
+  data.lastVisit = new Date().toISOString();
+  writeVisits(data);
+  res.json({ count: data.count });
+});
+
+app.get('/visit/count', (req, res) => {
+  res.json(readVisits());
 });
 
 // ── Traduction (Google) ────────────────────────────────────────
