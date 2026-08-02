@@ -29,6 +29,9 @@ const AZURE_VOICES = {
   'es-ES': 'es-ES-ElviraNeural',
   'it-IT': 'it-IT-ElsaNeural',
   'ar-XA': 'ar-EG-SalmaNeural',
+  'pt-PT': 'pt-PT-RaquelNeural',
+  'ru-RU': 'ru-RU-SvetlanaNeural',
+  'pl-PL': 'pl-PL-AgnieszkaNeural',
 };
 
 // ── Santé ─────────────────────────────────────────────────────
