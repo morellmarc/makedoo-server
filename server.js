@@ -54,6 +54,8 @@ const AZURE_VOICES = {
   'cy-GB': 'cy-GB-NiaNeural',
   'ga-IE': 'ga-IE-OrlaNeural',
   'mt-MT': 'mt-MT-GraceNeural',
+  'zh-CN': 'zh-CN-XiaoxiaoNeural',
+  'ja-JP': 'ja-JP-NanamiNeural',
 };
 
 // ── Santé ─────────────────────────────────────────────────────
