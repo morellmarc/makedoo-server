@@ -56,6 +56,11 @@ const AZURE_VOICES = {
   'mt-MT': 'mt-MT-GraceNeural',
   'zh-CN': 'zh-CN-XiaoxiaoNeural',
   'ja-JP': 'ja-JP-NanamiNeural',
+  'th-TH': 'th-TH-PremwadeeNeural',
+  'km-KH': 'km-KH-SreymomNeural',
+  'id-ID': 'id-ID-GadisNeural',
+  'vi-VN': 'vi-VN-HoaiMyNeural',
+  'lo-LA': 'lo-LA-KeomanyNeural',
 };
 
 // ── Santé ─────────────────────────────────────────────────────
