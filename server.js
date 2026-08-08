@@ -106,8 +106,8 @@ app.post('/translate', async (req, res) => {
 });
 
 // ── TTS Azure ─────────────────────────────────────────────────
-async function azureTTS(text, languageCode, speakingRate) {
-  const voice = AZURE_VOICES[languageCode] || 'en-US-JennyNeural';
+async function azureTTS(text, languageCode, speakingRate, voiceOverride) {
+  const voice = voiceOverride || AZURE_VOICES[languageCode] || 'en-US-JennyNeural';
   const rate = speakingRate < 1 ? '-10%' : '+0%';
   const ssml = `<speak version='1.0' xml:lang='${languageCode}'>
     <voice name='${voice}'>
@@ -149,16 +149,16 @@ async function googleTTS(text, languageCode, speakingRate) {
 // ── TTS endpoint ───────────────────────────────────────────────
 app.post('/tts', async (req, res) => {
   try {
-    const { text, languageCode, speakingRate = 0.85 } = req.body;
+    const { text, languageCode, speakingRate = 0.85, voice } = req.body;
     if (!text || !languageCode) return res.status(400).json({ error: 'Paramètres manquants' });
 
     // Langues Azure : MK, SQ, SR, BG, TR, EL + toutes si clé Azure dispo
     const azureLangs = ['mk-MK','sq-AL','sr-RS','bg-BG','tr-TR','el-GR'];
     let audioContent;
 
-    if (AZURE_KEY && (azureLangs.includes(languageCode) || AZURE_VOICES[languageCode])) {
+    if (AZURE_KEY && (voice || azureLangs.includes(languageCode) || AZURE_VOICES[languageCode])) {
       try {
-        audioContent = await azureTTS(text, languageCode, speakingRate);
+        audioContent = await azureTTS(text, languageCode, speakingRate, voice);
       } catch (e) {
         console.log('Azure fallback to Google:', e.message);
         audioContent = await googleTTS(text, languageCode, speakingRate);
