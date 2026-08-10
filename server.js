@@ -96,19 +96,45 @@ app.get('/info-text', (req, res) => {
     const data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8'));
     res.json(data);
   } catch (e) {
-    res.json({ text1: '', text2: '', text3: '', text4: '', text5: '', updated: null });
+    res.json({ text1: '', text2: '', text3: '', text4: '', text5: '', byLang: {}, updated: null });
   }
 });
 
-app.post('/info-text', (req, res) => {
+app.post('/info-text', async (req, res) => {
   try {
-    const { text1 = '', text2 = '', text3 = '', text4 = '', text5 = '', pin = '' } = req.body;
+    const { text1 = '', text2 = '', text3 = '', text4 = '', text5 = '', pin = '', sourceLang = 'fr' } = req.body;
     if (pin !== (process.env.INFO_PIN || 'makohrid')) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
-    const data = { text1, text2, text3, text4, text5, updated: new Date().toISOString() };
+    const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
+    const texts = [text1, text2, text3, text4, text5];
+    const byLang = { [sourceLang]: { text1, text2, text3, text4, text5 } };
+
+    // Traduction automatique vers toutes les langues d'interface
+    const targets = UI_LANGS.filter(l => l !== sourceLang);
+    await Promise.all(targets.map(async (target) => {
+      try {
+        const nonEmpty = texts.map((t, i) => ({ i, t })).filter(x => x.t.trim());
+        if (!nonEmpty.length) { byLang[target] = { text1: '', text2: '', text3: '', text4: '', text5: '' }; return; }
+        const response = await fetch(
+          `https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_KEY}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q: nonEmpty.map(x => x.t), source: sourceLang, target, format: 'text' }) }
+        );
+        const data = await response.json();
+        const translated = ['', '', '', '', ''];
+        if (data.data?.translations) {
+          nonEmpty.forEach((x, idx) => { translated[x.i] = data.data.translations[idx].translatedText; });
+        }
+        byLang[target] = { text1: translated[0], text2: translated[1], text3: translated[2], text4: translated[3], text5: translated[4] };
+      } catch (e) {
+        byLang[target] = { text1: '', text2: '', text3: '', text4: '', text5: '' };
+      }
+    }));
+
+    const data = { byLang, sourceLang, updated: new Date().toISOString() };
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
-    res.json({ ok: true, ...data });
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: 'Erreur sauvegarde' });
   }
