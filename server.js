@@ -13,6 +13,7 @@ const AZURE_KEY = process.env.AZURE_SPEECH_KEY;
 const AZURE_REGION = 'northeurope';
 const PORT = process.env.PORT || 3000;
 const COUNTER_FILE = path.join(__dirname, 'visits.json');
+const INFO_FILE = path.join(__dirname, 'info-text.json');
 
 // Voix Azure Neural par langue
 const AZURE_VOICES = {
@@ -87,6 +88,30 @@ app.get('/visit', (req, res) => {
 
 app.get('/visit/count', (req, res) => {
   res.json(readVisits());
+});
+
+// ── Message d'info éditable (écran d'accueil) ──────────────────────
+app.get('/info-text', (req, res) => {
+  try {
+    const data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8'));
+    res.json(data);
+  } catch (e) {
+    res.json({ text1: '', text2: '', text3: '', updated: null });
+  }
+});
+
+app.post('/info-text', (req, res) => {
+  try {
+    const { text1 = '', text2 = '', text3 = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+      return res.status(403).json({ error: 'PIN incorrect' });
+    }
+    const data = { text1, text2, text3, updated: new Date().toISOString() };
+    fs.writeFileSync(INFO_FILE, JSON.stringify(data));
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    res.status(500).json({ error: 'Erreur sauvegarde' });
+  }
 });
 
 // ── Traduction (Google) ────────────────────────────────────────
