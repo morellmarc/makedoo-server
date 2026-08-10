@@ -96,17 +96,17 @@ app.get('/info-text', (req, res) => {
     const data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8'));
     res.json(data);
   } catch (e) {
-    res.json({ text1: '', text2: '', text3: '', updated: null });
+    res.json({ text1: '', text2: '', text3: '', text4: '', text5: '', updated: null });
   }
 });
 
 app.post('/info-text', (req, res) => {
   try {
-    const { text1 = '', text2 = '', text3 = '', pin = '' } = req.body;
+    const { text1 = '', text2 = '', text3 = '', text4 = '', text5 = '', pin = '' } = req.body;
     if (pin !== (process.env.INFO_PIN || 'makohrid')) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
-    const data = { text1, text2, text3, updated: new Date().toISOString() };
+    const data = { text1, text2, text3, text4, text5, updated: new Date().toISOString() };
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json({ ok: true, ...data });
   } catch (e) {
