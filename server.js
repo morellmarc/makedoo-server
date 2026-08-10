@@ -195,11 +195,45 @@ app.post('/tts', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
-// ── STT (Google) ───────────────────────────────────────────────
+// ── STT Azure ─────────────────────────────────────────────────
+async function azureSTT(audioBase64, languageCode) {
+  const audioBuffer = Buffer.from(audioBase64, 'base64');
+  const url = `https://${AZURE_REGION}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language=${languageCode}&format=detailed`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': AZURE_KEY,
+      'Content-Type': 'audio/webm;codecs=opus',
+      'Accept': 'application/json'
+    },
+    body: audioBuffer
+  });
+  if (!response.ok) throw new Error(`Azure STT error: ${response.status}`);
+  const data = await response.json();
+  if (data.RecognitionStatus !== 'Success') throw new Error('Azure STT: ' + data.RecognitionStatus);
+  const transcript = data.NBest?.[0]?.Display || data.DisplayText || '';
+  if (!transcript) throw new Error('Azure STT: empty transcript');
+  return transcript;
+}
+
+// ── STT (Azure prioritaire pour certaines langues, sinon Google) ─
 app.post('/stt', async (req, res) => {
   try {
     const { audio, languageCode, encoding = 'WEBM_OPUS', sampleRateHertz = 48000 } = req.body;
     if (!audio || !languageCode) return res.status(400).json({ error: 'Paramètres manquants' });
+
+    // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
+    const azureSTTLangs = ['mk-MK'];
+
+    if (AZURE_KEY && azureSTTLangs.includes(languageCode)) {
+      try {
+        const transcript = await azureSTT(audio, languageCode);
+        return res.json({ transcript, engine: 'azure' });
+      } catch (e) {
+        console.log('Azure STT fallback to Google:', e.message);
+      }
+    }
+
     const response = await fetch(
       `https://speech.googleapis.com/v1/speech:recognize?key=${GOOGLE_KEY}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -211,7 +245,7 @@ app.post('/stt', async (req, res) => {
     const data = await response.json();
     if (data.error) return res.status(500).json({ error: data.error.message });
     const transcript = data.results?.[0]?.alternatives?.[0]?.transcript || '';
-    res.json({ transcript });
+    res.json({ transcript, engine: 'google' });
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
