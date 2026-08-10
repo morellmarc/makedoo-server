@@ -196,14 +196,14 @@ app.post('/tts', async (req, res) => {
 });
 
 // ── STT Azure ─────────────────────────────────────────────────
-async function azureSTT(audioBase64, languageCode) {
+async function azureSTT(audioBase64, languageCode, contentType) {
   const audioBuffer = Buffer.from(audioBase64, 'base64');
   const url = `https://${AZURE_REGION}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language=${languageCode}&format=detailed`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Ocp-Apim-Subscription-Key': AZURE_KEY,
-      'Content-Type': 'audio/webm;codecs=opus',
+      'Content-Type': contentType || 'audio/webm;codecs=opus',
       'Accept': 'application/json'
     },
     body: audioBuffer
@@ -219,15 +219,19 @@ async function azureSTT(audioBase64, languageCode) {
 // ── STT (Azure prioritaire pour certaines langues, sinon Google) ─
 app.post('/stt', async (req, res) => {
   try {
-    const { audio, languageCode, encoding = 'WEBM_OPUS', sampleRateHertz = 48000 } = req.body;
+    const { audio, languageCode, mimeType, encoding, sampleRateHertz = 48000 } = req.body;
     if (!audio || !languageCode) return res.status(400).json({ error: 'Paramètres manquants' });
+
+    // Le conteneur WebM des navigateurs est encodé en Opus, avec ou sans la mention explicite
+    const googleEncoding = encoding || 'WEBM_OPUS';
+    const azureContentType = mimeType || 'audio/webm;codecs=opus';
 
     // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
     const azureSTTLangs = ['mk-MK'];
 
     if (AZURE_KEY && azureSTTLangs.includes(languageCode)) {
       try {
-        const transcript = await azureSTT(audio, languageCode);
+        const transcript = await azureSTT(audio, languageCode, azureContentType);
         return res.json({ transcript, engine: 'azure' });
       } catch (e) {
         console.log('Azure STT fallback to Google:', e.message);
@@ -238,7 +242,7 @@ app.post('/stt', async (req, res) => {
       `https://speech.googleapis.com/v1/speech:recognize?key=${GOOGLE_KEY}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          config: { encoding, sampleRateHertz, languageCode, enableAutomaticPunctuation: true, model: 'default' },
+          config: { encoding: googleEncoding, sampleRateHertz, languageCode, enableAutomaticPunctuation: true, model: 'default' },
           audio: { content: audio }
         }) }
     );
