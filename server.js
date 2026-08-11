@@ -234,7 +234,10 @@ async function azureSTT(audioBase64, languageCode, contentType) {
     },
     body: audioBuffer
   });
-  if (!response.ok) throw new Error(`Azure STT error: ${response.status}`);
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`Azure STT error: ${response.status} — ${errBody.slice(0, 200)}`);
+  }
   const data = await response.json();
   if (data.RecognitionStatus !== 'Success') throw new Error('Azure STT: ' + data.RecognitionStatus);
   const transcript = data.NBest?.[0]?.Display || data.DisplayText || '';
@@ -255,11 +258,13 @@ app.post('/stt', async (req, res) => {
     // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
     const azureSTTLangs = ['mk-MK'];
 
+    let azureError = null;
     if (AZURE_KEY && azureSTTLangs.includes(languageCode)) {
       try {
         const transcript = await azureSTT(audio, languageCode, azureContentType);
         return res.json({ transcript, engine: 'azure' });
       } catch (e) {
+        azureError = e.message;
         console.log('Azure STT fallback to Google:', e.message);
       }
     }
@@ -275,7 +280,7 @@ app.post('/stt', async (req, res) => {
     const data = await response.json();
     if (data.error) return res.status(500).json({ error: data.error.message });
     const transcript = data.results?.[0]?.alternatives?.[0]?.transcript || '';
-    res.json({ transcript, engine: 'google' });
+    res.json({ transcript, engine: 'google', azureError });
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
