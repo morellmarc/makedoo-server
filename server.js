@@ -240,8 +240,8 @@ async function azureSTT(audioBase64, languageCode, contentType) {
   }
   const data = await response.json();
   if (data.RecognitionStatus !== 'Success') throw new Error('Azure STT: ' + data.RecognitionStatus);
-  const transcript = data.NBest?.[0]?.Display || data.DisplayText || '';
-  if (!transcript) throw new Error('Azure STT: empty transcript');
+  const transcript = data.DisplayText || data.NBest?.[0]?.Display || data.NBest?.[0]?.Lexical || '';
+  if (!transcript) throw new Error('Azure STT: empty transcript — raw: ' + JSON.stringify(data).slice(0, 300));
   return transcript;
 }
 
