@@ -257,7 +257,7 @@ app.post('/stt', async (req, res) => {
     const azureContentType = rawContentType.replace(/;\s*codecs=/i, '; codecs=');
 
     // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
-    const azureSTTLangs = ['mk-MK'];
+    const azureSTTLangs = []; // Azure STT désactivé (incompatible avec l'audio WebM/Opus des navigateurs) — repli permanent sur Google
 
     let azureError = null;
     if (AZURE_KEY && azureSTTLangs.includes(languageCode)) {
