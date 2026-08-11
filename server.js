@@ -224,7 +224,7 @@ app.post('/tts', async (req, res) => {
 // ── STT Azure ─────────────────────────────────────────────────
 async function azureSTT(audioBase64, languageCode, contentType) {
   const audioBuffer = Buffer.from(audioBase64, 'base64');
-  const url = `https://${AZURE_REGION}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language=${languageCode}&format=detailed`;
+  const url = `https://${AZURE_REGION}.stt.speech.microsoft.com/speech/recognition/interactive/cognitiveservices/v1?language=${languageCode}&format=detailed`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -257,7 +257,7 @@ app.post('/stt', async (req, res) => {
     const azureContentType = rawContentType.replace(/;\s*codecs=/i, '; codecs=');
 
     // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
-    const azureSTTLangs = []; // Azure STT désactivé (incompatible avec l'audio WebM/Opus des navigateurs) — repli permanent sur Google
+    const azureSTTLangs = ['mk-MK']; // Test du mode "interactive" (mieux adapté aux énoncés courts que "conversation")
 
     let azureError = null;
     if (AZURE_KEY && azureSTTLangs.includes(languageCode)) {
