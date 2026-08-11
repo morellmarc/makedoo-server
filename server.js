@@ -279,4 +279,50 @@ app.post('/stt', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
+// ── Publication vers makedoo-library (GitHub) ──────────────────
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPO = 'morellmarc/makedoo-library';
+
+app.post('/publish-library', async (req, res) => {
+  try {
+    const { tier = 'gratuit', folder = '', filename = '', session = null, pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+      return res.status(403).json({ error: 'PIN incorrect' });
+    }
+    if (!GITHUB_TOKEN) {
+      return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
+    }
+    if (!session || !folder || !filename) {
+      return res.status(400).json({ error: 'Paramètres manquants' });
+    }
+    const safeFolder = folder.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const safeFile = filename.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const path = `${tier}/${safeFolder}/${safeFile}.json`;
+    const content = Buffer.from(JSON.stringify(session, null, 2)).toString('base64');
+
+    const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`;
+
+    // Vérifier si le fichier existe déjà (pour récupérer son sha et le mettre à jour proprement)
+    let sha;
+    try {
+      const existing = await fetch(url, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+      if (existing.ok) { const data = await existing.json(); sha = data.sha; }
+    } catch (e) {}
+
+    const body = { message: `Ajout session Makedoo : ${safeFile}`, content };
+    if (sha) body.sha = sha;
+
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok) return res.status(500).json({ error: data.message || 'Erreur GitHub' });
+    res.json({ ok: true, path, url: data.content?.html_url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`✅ Makedoo API v2 sur port ${PORT}`));
