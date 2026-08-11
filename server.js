@@ -283,9 +283,19 @@ app.post('/stt', async (req, res) => {
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = 'morellmarc/makedoo-library';
 
+app.get('/library-manifest', async (req, res) => {
+  try {
+    const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/manifest.json?t=${Date.now()}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/publish-library', async (req, res) => {
   try {
-    const { tier = 'gratuit', folder = '', filename = '', session = null, pin = '' } = req.body;
+    const { tier = 'gratuit', folder = '', filename = '', session = null, pin = '', newPack = null } = req.body;
     if (pin !== (process.env.INFO_PIN || 'makohrid')) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
@@ -319,6 +329,37 @@ app.post('/publish-library', async (req, res) => {
     });
     const data = await response.json();
     if (!response.ok) return res.status(500).json({ error: data.message || 'Erreur GitHub' });
+
+    // Si c'est un nouveau pack, l'enregistrer dans manifest.json pour qu'il apparaisse dans la bibliothèque
+    if (newPack) {
+      try {
+        const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/manifest.json`;
+        const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+        const manifestFile = await manifestRes.json();
+        const manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+        const alreadyExists = manifestContent.packs.some(p => p.id === safeFolder);
+        if (!alreadyExists) {
+          manifestContent.packs.push({
+            id: safeFolder,
+            tier,
+            name: newPack.name || safeFolder,
+            description: newPack.description || '',
+            langPair: newPack.langPair || '',
+            path: `${tier}/${safeFolder}`
+          });
+          manifestContent.updated = new Date().toISOString().split('T')[0];
+          const newManifestContent = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+          await fetch(manifestUrl, {
+            method: 'PUT',
+            headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: `Nouveau pack : ${safeFolder}`, content: newManifestContent, sha: manifestFile.sha })
+          });
+        }
+      } catch (e) {
+        console.log('Erreur mise à jour manifest.json:', e.message);
+      }
+    }
+
     res.json({ ok: true, path, url: data.content?.html_url });
   } catch (e) {
     res.status(500).json({ error: e.message });
