@@ -325,4 +325,13 @@ app.post('/publish-library', async (req, res) => {
   }
 });
 
+// ── DEBUG TEMPORAIRE — à retirer une fois le problème résolu ────
+app.get('/debug-github-token', (req, res) => {
+  res.json({
+    present: !!GITHUB_TOKEN,
+    length: GITHUB_TOKEN ? GITHUB_TOKEN.length : 0,
+    startsCorrectly: GITHUB_TOKEN ? GITHUB_TOKEN.startsWith('github_pat_') : false
+  });
+});
+
 app.listen(PORT, () => console.log(`✅ Makedoo API v2 sur port ${PORT}`));
