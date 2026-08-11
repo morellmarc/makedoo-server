@@ -253,7 +253,8 @@ app.post('/stt', async (req, res) => {
 
     // Le conteneur WebM des navigateurs est encodé en Opus, avec ou sans la mention explicite
     const googleEncoding = encoding || 'WEBM_OPUS';
-    const azureContentType = mimeType || 'audio/webm;codecs=opus';
+    const rawContentType = mimeType || 'audio/webm;codecs=opus';
+    const azureContentType = rawContentType.replace(/;\s*codecs=/i, '; codecs=');
 
     // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
     const azureSTTLangs = ['mk-MK'];
