@@ -331,42 +331,178 @@ app.post('/publish-library', async (req, res) => {
     if (!response.ok) return res.status(500).json({ error: data.message || 'Erreur GitHub' });
 
     // Si c'est un nouveau pack, l'enregistrer dans manifest.json pour qu'il apparaisse dans la bibliothèque
+    let manifestWarning = null;
     if (newPack) {
       try {
         const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/manifest.json`;
         const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
-        const manifestFile = await manifestRes.json();
-        const manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
-        const alreadyExists = manifestContent.packs.some(p => p.id === safeFolder);
-        if (!alreadyExists) {
-          manifestContent.packs.push({
-            id: safeFolder,
-            tier,
-            name: newPack.name || safeFolder,
-            description: newPack.description || '',
-            langPair: newPack.langPair || '',
-            path: `${tier}/${safeFolder}`
-          });
-          manifestContent.updated = new Date().toISOString().split('T')[0];
-          const newManifestContent = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
-          await fetch(manifestUrl, {
-            method: 'PUT',
-            headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: `Nouveau pack : ${safeFolder}`, content: newManifestContent, sha: manifestFile.sha })
-          });
+        if (!manifestRes.ok) {
+          manifestWarning = `Lecture manifest.json échouée : ${manifestRes.status}`;
+        } else {
+          const manifestFile = await manifestRes.json();
+          const manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+          const alreadyExists = manifestContent.packs.some(p => p.id === safeFolder);
+          if (!alreadyExists) {
+            manifestContent.packs.push({
+              id: safeFolder,
+              tier,
+              name: newPack.name || safeFolder,
+              description: newPack.description || '',
+              langPair: newPack.langPair || '',
+              path: `${tier}/${safeFolder}`
+            });
+            manifestContent.updated = new Date().toISOString().split('T')[0];
+            const newManifestContent = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+            const manifestPutRes = await fetch(manifestUrl, {
+              method: 'PUT',
+              headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: `Nouveau pack : ${safeFolder}`, content: newManifestContent, sha: manifestFile.sha })
+            });
+            if (!manifestPutRes.ok) {
+              const putErr = await manifestPutRes.json().catch(() => ({}));
+              manifestWarning = `Écriture manifest.json échouée : ${putErr.message || manifestPutRes.status}`;
+            }
+          }
         }
       } catch (e) {
-        console.log('Erreur mise à jour manifest.json:', e.message);
+        manifestWarning = 'Erreur manifest.json : ' + e.message;
       }
     }
 
-    res.json({ ok: true, path, url: data.content?.html_url });
+    res.json({ ok: true, path, url: data.content?.html_url, manifestWarning });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // ── DEBUG TEMPORAIRE — à retirer une fois le problème résolu ────
+// ── Gestion bibliothèque : lister fichiers d'un pack ────────────
+app.get('/library-pack-files', async (req, res) => {
+  try {
+    const { path } = req.query;
+    if (!path) return res.status(400).json({ error: 'path manquant' });
+    const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`;
+    const response = await fetch(url, { headers: GITHUB_TOKEN ? { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } : {} });
+    const data = await response.json();
+    if (!response.ok) return res.status(500).json({ error: data.message || 'Erreur GitHub' });
+    const files = Array.isArray(data) ? data.filter(f => f.name.endsWith('.json')).map(f => ({ name: f.name, sha: f.sha })) : [];
+    res.json({ files });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+async function getManifest() {
+  const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/manifest.json`;
+  const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+  if (!manifestRes.ok) throw new Error('Lecture manifest.json échouée : ' + manifestRes.status);
+  const manifestFile = await manifestRes.json();
+  const manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+  return { manifestUrl, manifestContent, sha: manifestFile.sha };
+}
+async function putManifest(manifestUrl, manifestContent, sha, message) {
+  manifestContent.updated = new Date().toISOString().split('T')[0];
+  const newManifestContent = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+  const putRes = await fetch(manifestUrl, {
+    method: 'PUT',
+    headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: newManifestContent, sha })
+  });
+  if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error('Écriture manifest.json échouée : ' + (err.message || putRes.status)); }
+}
+async function deleteGithubFile(path, message) {
+  const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`;
+  const getRes = await fetch(url, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+  if (!getRes.ok) throw new Error('Fichier introuvable : ' + path);
+  const fileData = await getRes.json();
+  const delRes = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, sha: fileData.sha })
+  });
+  if (!delRes.ok) { const err = await delRes.json().catch(() => ({})); throw new Error('Suppression échouée : ' + (err.message || delRes.status)); }
+}
+
+// ── Renommer un pack (nom/description affichés) ─────────────────
+app.post('/library-rename-pack', async (req, res) => {
+  try {
+    const { packId, name, description, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!packId) return res.status(400).json({ error: 'packId manquant' });
+    const { manifestUrl, manifestContent, sha } = await getManifest();
+    const pack = manifestContent.packs.find(p => p.id === packId);
+    if (!pack) return res.status(404).json({ error: 'Pack introuvable' });
+    if (name) pack.name = name;
+    if (description !== undefined) pack.description = description;
+    await putManifest(manifestUrl, manifestContent, sha, `Renommage pack : ${packId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+// ── Supprimer un pack (manifest + tous ses fichiers) ─────────────
+app.post('/library-delete-pack', async (req, res) => {
+  try {
+    const { packId, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!packId) return res.status(400).json({ error: 'packId manquant' });
+    const { manifestUrl, manifestContent, sha } = await getManifest();
+    const pack = manifestContent.packs.find(p => p.id === packId);
+    if (!pack) return res.status(404).json({ error: 'Pack introuvable' });
+    // Supprimer tous les fichiers du dossier
+    const listUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/${pack.path}`;
+    const listRes = await fetch(listUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+    if (listRes.ok) {
+      const filesList = await listRes.json();
+      if (Array.isArray(filesList)) {
+        for (const f of filesList) {
+          await deleteGithubFile(`${pack.path}/${f.name}`, `Suppression pack : ${packId}`);
+        }
+      }
+    }
+    manifestContent.packs = manifestContent.packs.filter(p => p.id !== packId);
+    await putManifest(manifestUrl, manifestContent, sha, `Suppression pack : ${packId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+// ── Renommer un fichier JSON dans un pack ────────────────────────
+app.post('/library-rename-file', async (req, res) => {
+  try {
+    const { path, newFilename, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!path || !newFilename) return res.status(400).json({ error: 'Paramètres manquants' });
+    const safeFile = newFilename.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const folder = path.substring(0, path.lastIndexOf('/'));
+    const newPath = `${folder}/${safeFile}.json`;
+    const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`;
+    const getRes = await fetch(url, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+    if (!getRes.ok) return res.status(404).json({ error: 'Fichier introuvable' });
+    const fileData = await getRes.json();
+    const newUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/${newPath}`;
+    const createRes = await fetch(newUrl, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `Renommage : ${path} → ${newPath}`, content: fileData.content })
+    });
+    if (!createRes.ok) { const err = await createRes.json().catch(() => ({})); return res.status(500).json({ error: err.message || 'Erreur création' }); }
+    await deleteGithubFile(path, `Renommage (ancien fichier) : ${path}`);
+    res.json({ ok: true, newPath });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+// ── Supprimer un fichier JSON dans un pack ───────────────────────
+app.post('/library-delete-file', async (req, res) => {
+  try {
+    const { path, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!path) return res.status(400).json({ error: 'path manquant' });
+    await deleteGithubFile(path, `Suppression fichier : ${path}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
 app.get('/debug-github-token', (req, res) => {
   res.json({
     present: !!GITHUB_TOKEN,
