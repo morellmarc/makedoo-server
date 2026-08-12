@@ -257,7 +257,7 @@ app.post('/stt', async (req, res) => {
     const azureContentType = rawContentType.replace(/;\s*codecs=/i, '; codecs=');
 
     // Langues où Azure STT est prioritaire (meilleure précision que Google pour ces langues)
-    const azureSTTLangs = ['mk-MK']; // Test du mode "interactive" (mieux adapté aux énoncés courts que "conversation")
+    const azureSTTLangs = []; // Azure STT abandonné pour le MK (échecs répétés, incompatibilité confirmée) — Google seul
 
     let azureError = null;
     if (AZURE_KEY && azureSTTLangs.includes(languageCode)) {
@@ -507,6 +507,63 @@ app.post('/library-delete-file', async (req, res) => {
     await deleteGithubFile(path, `Suppression fichier : ${path}`);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+// ── Audiothèque Makedoo (fichiers MP3 déjà existants) ────────────
+app.get('/audio-manifest', async (req, res) => {
+  try {
+    const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/audio-manifest.json?t=${Date.now()}`);
+    if (!response.ok) return res.json({ version: '1.0', updated: null, tracks: [] });
+    const data = await response.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ version: '1.0', updated: null, tracks: [] });
+  }
+});
+
+app.post('/publish-audio', async (req, res) => {
+  try {
+    const { title = '', lang = 'fr', category = '', url = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
+    if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
+
+    const safeCategory = category.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const safeTitleSlug = title.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const trackId = `${safeCategory}-${safeTitleSlug}-${lang}`;
+
+    // Mise à jour du catalogue audio-manifest.json (le fichier lui-même reste hébergé sur pCloud)
+    const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/audio-manifest.json`;
+    let manifestContent = { version: '1.0', updated: '', tracks: [] };
+    let manifestSha;
+    try {
+      const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+      if (manifestRes.ok) {
+        const manifestFile = await manifestRes.json();
+        manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+        manifestSha = manifestFile.sha;
+      }
+    } catch (e) {}
+    manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
+    manifestContent.tracks.push({ id: trackId, title, lang, category: safeCategory, url });
+    manifestContent.updated = new Date().toISOString().split('T')[0];
+    const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+    const manifestPutBody = { message: `Catalogue audio : ${title}`, content: newManifestB64 };
+    if (manifestSha) manifestPutBody.sha = manifestSha;
+    const manifestPutRes = await fetch(manifestUrl, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestPutBody)
+    });
+    if (!manifestPutRes.ok) {
+      const err = await manifestPutRes.json().catch(() => ({}));
+      return res.status(500).json({ error: err.message || 'Erreur mise à jour catalogue' });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/debug-github-token', (req, res) => {
