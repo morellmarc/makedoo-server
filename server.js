@@ -566,6 +566,65 @@ app.post('/publish-audio', async (req, res) => {
   }
 });
 
+app.get('/audio-categories', async (req, res) => {
+  try {
+    const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/audio-manifest.json?t=${Date.now()}`);
+    if (!response.ok) return res.json({ categories: [] });
+    const data = await response.json();
+    const categories = [...new Set((data.tracks || []).map(t => t.category))].sort();
+    res.json({ categories });
+  } catch (e) {
+    res.json({ categories: [] });
+  }
+});
+
+async function getAudioManifest() {
+  const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/audio-manifest.json`;
+  const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+  if (!manifestRes.ok) throw new Error('Lecture audio-manifest.json échouée : ' + manifestRes.status);
+  const manifestFile = await manifestRes.json();
+  const manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+  return { manifestUrl, manifestContent, sha: manifestFile.sha };
+}
+async function putAudioManifest(manifestUrl, manifestContent, sha, message) {
+  manifestContent.updated = new Date().toISOString().split('T')[0];
+  const newContent = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+  const putRes = await fetch(manifestUrl, {
+    method: 'PUT',
+    headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: newContent, sha })
+  });
+  if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error('Écriture audio-manifest.json échouée : ' + (err.message || putRes.status)); }
+}
+
+app.post('/audio-delete', async (req, res) => {
+  try {
+    const { trackId, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!trackId) return res.status(400).json({ error: 'trackId manquant' });
+    const { manifestUrl, manifestContent, sha } = await getAudioManifest();
+    manifestContent.tracks = manifestContent.tracks.filter(t => t.id !== trackId);
+    await putAudioManifest(manifestUrl, manifestContent, sha, `Suppression audio : ${trackId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/audio-rename', async (req, res) => {
+  try {
+    const { trackId, title, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!trackId || !title) return res.status(400).json({ error: 'Paramètres manquants' });
+    const { manifestUrl, manifestContent, sha } = await getAudioManifest();
+    const track = manifestContent.tracks.find(t => t.id === trackId);
+    if (!track) return res.status(404).json({ error: 'Piste introuvable' });
+    track.title = title;
+    await putAudioManifest(manifestUrl, manifestContent, sha, `Renommage audio : ${trackId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
 app.get('/debug-github-token', (req, res) => {
   res.json({
     present: !!GITHUB_TOKEN,
