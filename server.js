@@ -523,7 +523,7 @@ app.get('/audio-manifest', async (req, res) => {
 
 app.post('/publish-audio', async (req, res) => {
   try {
-    const { title = '', lang = 'fr', category = '', url = '', pin = '' } = req.body;
+    const { title = '', lang = 'fr', type = 'livre', category = '', url = '', pin = '' } = req.body;
     if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
     if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
@@ -546,7 +546,7 @@ app.post('/publish-audio', async (req, res) => {
       }
     } catch (e) {}
     manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
-    manifestContent.tracks.push({ id: trackId, title, lang, category: safeCategory, url });
+    manifestContent.tracks.push({ id: trackId, title, lang, type, category: safeCategory, url });
     manifestContent.updated = new Date().toISOString().split('T')[0];
     const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
     const manifestPutBody = { message: `Catalogue audio : ${title}`, content: newManifestB64 };
@@ -623,6 +623,11 @@ app.post('/audio-rename', async (req, res) => {
     await putAudioManifest(manifestUrl, manifestContent, sha, `Renommage audio : ${trackId}`);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/verify-admin-pin', (req, res) => {
+  const { pin } = req.body;
+  res.json({ ok: pin === (process.env.INFO_PIN || 'makohrid') });
 });
 
 app.get('/debug-github-token', (req, res) => {
