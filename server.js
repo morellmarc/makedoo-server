@@ -102,33 +102,33 @@ app.get('/info-text', (req, res) => {
 
 app.post('/info-text', async (req, res) => {
   try {
-    const { text1 = '', text2 = '', text3 = '', text4 = '', text5 = '', pin = '', sourceLang = 'fr' } = req.body;
+    const { text = '', pin = '', sourceLang = 'fr' } = req.body;
     if (pin !== (process.env.INFO_PIN || 'makohrid')) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
     const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
-    const texts = [text1, text2, text3, text4, text5];
-    const byLang = { [sourceLang]: { text1, text2, text3, text4, text5 } };
+    const lines = text.split('\n');
+    const byLang = { [sourceLang]: { text } };
 
-    // Traduction automatique vers toutes les langues d'interface
+    // Traduction automatique vers toutes les langues d'interface, ligne par ligne (préserve les sauts de paragraphe)
     const targets = UI_LANGS.filter(l => l !== sourceLang);
     await Promise.all(targets.map(async (target) => {
       try {
-        const nonEmpty = texts.map((t, i) => ({ i, t })).filter(x => x.t.trim());
-        if (!nonEmpty.length) { byLang[target] = { text1: '', text2: '', text3: '', text4: '', text5: '' }; return; }
+        const nonEmpty = lines.map((l, i) => ({ i, l })).filter(x => x.l.trim());
+        if (!nonEmpty.length) { byLang[target] = { text: '' }; return; }
         const response = await fetch(
           `https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_KEY}`,
           { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ q: nonEmpty.map(x => x.t), source: sourceLang, target, format: 'text' }) }
+            body: JSON.stringify({ q: nonEmpty.map(x => x.l), source: sourceLang, target, format: 'text' }) }
         );
         const data = await response.json();
-        const translated = ['', '', '', '', ''];
+        const translatedLines = [...lines];
         if (data.data?.translations) {
-          nonEmpty.forEach((x, idx) => { translated[x.i] = data.data.translations[idx].translatedText; });
+          nonEmpty.forEach((x, idx) => { translatedLines[x.i] = data.data.translations[idx].translatedText; });
         }
-        byLang[target] = { text1: translated[0], text2: translated[1], text3: translated[2], text4: translated[3], text5: translated[4] };
+        byLang[target] = { text: translatedLines.join('\n') };
       } catch (e) {
-        byLang[target] = { text1: '', text2: '', text3: '', text4: '', text5: '' };
+        byLang[target] = { text: '' };
       }
     }));
 
