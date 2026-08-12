@@ -630,6 +630,109 @@ app.post('/verify-admin-pin', (req, res) => {
   res.json({ ok: pin === (process.env.INFO_PIN || 'makohrid') });
 });
 
+// ── Bibliothèque de livres PDF (déjà hébergés sur pCloud) ────────
+app.get('/pdf-manifest', async (req, res) => {
+  try {
+    const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/pdf-manifest.json?t=${Date.now()}`);
+    if (!response.ok) return res.json({ version: '1.0', updated: null, books: [] });
+    const data = await response.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ version: '1.0', updated: null, books: [] });
+  }
+});
+
+app.post('/publish-pdf', async (req, res) => {
+  try {
+    const { title = '', lang = 'fr', category = '', url = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
+    if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
+
+    const safeCategory = category.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const safeTitleSlug = title.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const bookId = `${safeCategory}-${safeTitleSlug}-${lang}`;
+
+    const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/pdf-manifest.json`;
+    let manifestContent = { version: '1.0', updated: '', books: [] };
+    let manifestSha;
+    try {
+      const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+      if (manifestRes.ok) {
+        const manifestFile = await manifestRes.json();
+        manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+        manifestSha = manifestFile.sha;
+      }
+    } catch (e) {}
+    manifestContent.books = manifestContent.books.filter(b => b.id !== bookId);
+    manifestContent.books.push({ id: bookId, title, lang, category: safeCategory, url });
+    manifestContent.updated = new Date().toISOString().split('T')[0];
+    const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+    const manifestPutBody = { message: `Catalogue PDF : ${title}`, content: newManifestB64 };
+    if (manifestSha) manifestPutBody.sha = manifestSha;
+    const manifestPutRes = await fetch(manifestUrl, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestPutBody)
+    });
+    if (!manifestPutRes.ok) {
+      const err = await manifestPutRes.json().catch(() => ({}));
+      return res.status(500).json({ error: err.message || 'Erreur mise à jour catalogue' });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function getPdfManifest() {
+  const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/pdf-manifest.json`;
+  const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+  if (!manifestRes.ok) throw new Error('Lecture pdf-manifest.json échouée : ' + manifestRes.status);
+  const manifestFile = await manifestRes.json();
+  const manifestContent = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString('utf8'));
+  return { manifestUrl, manifestContent, sha: manifestFile.sha };
+}
+async function putPdfManifest(manifestUrl, manifestContent, sha, message) {
+  manifestContent.updated = new Date().toISOString().split('T')[0];
+  const newContent = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
+  const putRes = await fetch(manifestUrl, {
+    method: 'PUT',
+    headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: newContent, sha })
+  });
+  if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error('Écriture pdf-manifest.json échouée : ' + (err.message || putRes.status)); }
+}
+
+app.post('/pdf-delete', async (req, res) => {
+  try {
+    const { bookId, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!bookId) return res.status(400).json({ error: 'bookId manquant' });
+    const { manifestUrl, manifestContent, sha } = await getPdfManifest();
+    manifestContent.books = manifestContent.books.filter(b => b.id !== bookId);
+    await putPdfManifest(manifestUrl, manifestContent, sha, `Suppression PDF : ${bookId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/pdf-rename', async (req, res) => {
+  try {
+    const { bookId, title, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!bookId || !title) return res.status(400).json({ error: 'Paramètres manquants' });
+    const { manifestUrl, manifestContent, sha } = await getPdfManifest();
+    const book = manifestContent.books.find(b => b.id === bookId);
+    if (!book) return res.status(404).json({ error: 'Livre introuvable' });
+    book.title = title;
+    await putPdfManifest(manifestUrl, manifestContent, sha, `Renommage PDF : ${bookId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
 app.get('/debug-github-token', (req, res) => {
   res.json({
     present: !!GITHUB_TOKEN,
