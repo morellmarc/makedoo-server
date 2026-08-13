@@ -535,7 +535,7 @@ app.post('/publish-audio', async (req, res) => {
 
     // Mise à jour du catalogue audio-manifest.json (le fichier lui-même reste hébergé sur pCloud)
     const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/audio-manifest.json`;
-    let manifestContent = { version: '1.0', updated: '', tracks: [] };
+    let manifestContent = { version: '1.0', updated: '', categories: [], tracks: [] };
     let manifestSha;
     try {
       const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
@@ -545,6 +545,8 @@ app.post('/publish-audio', async (req, res) => {
         manifestSha = manifestFile.sha;
       }
     } catch (e) {}
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
     manifestContent.tracks.push({ id: trackId, title, lang, type, category: safeCategory, url });
     manifestContent.updated = new Date().toISOString().split('T')[0];
@@ -571,11 +573,66 @@ app.get('/audio-categories', async (req, res) => {
     const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/audio-manifest.json?t=${Date.now()}`);
     if (!response.ok) return res.json({ categories: [] });
     const data = await response.json();
-    const categories = [...new Set((data.tracks || []).map(t => t.category))].sort();
+    let categories = Array.isArray(data.categories) ? data.categories.slice() : [];
+    const fromTracks = (data.tracks || []).map(t => t.category);
+    fromTracks.forEach(c => { if (c && !categories.includes(c)) categories.push(c); });
+    categories.sort();
     res.json({ categories });
   } catch (e) {
     res.json({ categories: [] });
   }
+});
+
+app.post('/audio-category-create', async (req, res) => {
+  try {
+    const { name, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Nom manquant' });
+    const safeName = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!safeName) return res.status(400).json({ error: 'Nom invalide' });
+    const { manifestUrl, manifestContent, sha } = await getAudioManifest();
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (manifestContent.categories.includes(safeName)) return res.status(400).json({ error: 'Catégorie déjà existante' });
+    manifestContent.categories.push(safeName);
+    await putAudioManifest(manifestUrl, manifestContent, sha, `Nouvelle catégorie audio : ${safeName}`);
+    res.json({ ok: true, category: safeName });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/audio-category-rename', async (req, res) => {
+  try {
+    const { oldName, newName, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!oldName || !newName || !newName.trim()) return res.status(400).json({ error: 'Paramètres manquants' });
+    const safeNew = newName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!safeNew) return res.status(400).json({ error: 'Nom invalide' });
+    const { manifestUrl, manifestContent, sha } = await getAudioManifest();
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (safeNew !== oldName && manifestContent.categories.includes(safeNew)) return res.status(400).json({ error: 'Catégorie déjà existante' });
+    manifestContent.categories = manifestContent.categories.filter(c => c !== oldName);
+    manifestContent.categories.push(safeNew);
+    manifestContent.tracks.forEach(t => { if (t.category === oldName) t.category = safeNew; });
+    await putAudioManifest(manifestUrl, manifestContent, sha, `Renommage catégorie audio : ${oldName} → ${safeNew}`);
+    res.json({ ok: true, category: safeNew });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/audio-category-delete', async (req, res) => {
+  try {
+    const { name, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!name) return res.status(400).json({ error: 'Nom manquant' });
+    const { manifestUrl, manifestContent, sha } = await getAudioManifest();
+    const inUse = manifestContent.tracks.some(t => t.category === name);
+    if (inUse) return res.status(400).json({ error: 'Catégorie non vide — impossible à supprimer' });
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    manifestContent.categories = manifestContent.categories.filter(c => c !== name);
+    await putAudioManifest(manifestUrl, manifestContent, sha, `Suppression catégorie audio : ${name}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
 async function getAudioManifest() {
@@ -644,7 +701,7 @@ app.get('/pdf-manifest', async (req, res) => {
 
 app.post('/publish-pdf', async (req, res) => {
   try {
-    const { title = '', lang = 'fr', category = '', url = '', pin = '' } = req.body;
+    const { title = '', lang = 'fr', type = 'livre', category = '', url = '', pin = '' } = req.body;
     if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
     if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
@@ -655,7 +712,7 @@ app.post('/publish-pdf', async (req, res) => {
     const bookId = `${safeCategory}-${safeTitleSlug}-${lang}`;
 
     const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/pdf-manifest.json`;
-    let manifestContent = { version: '1.0', updated: '', books: [] };
+    let manifestContent = { version: '1.0', updated: '', categories: [], books: [] };
     let manifestSha;
     try {
       const manifestRes = await fetch(manifestUrl, { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
@@ -665,8 +722,10 @@ app.post('/publish-pdf', async (req, res) => {
         manifestSha = manifestFile.sha;
       }
     } catch (e) {}
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     manifestContent.books = manifestContent.books.filter(b => b.id !== bookId);
-    manifestContent.books.push({ id: bookId, title, lang, category: safeCategory, url });
+    manifestContent.books.push({ id: bookId, title, lang, type, category: safeCategory, url });
     manifestContent.updated = new Date().toISOString().split('T')[0];
     const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
     const manifestPutBody = { message: `Catalogue PDF : ${title}`, content: newManifestB64 };
@@ -704,6 +763,73 @@ async function putPdfManifest(manifestUrl, manifestContent, sha, message) {
   });
   if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error('Écriture pdf-manifest.json échouée : ' + (err.message || putRes.status)); }
 }
+
+app.get('/pdf-categories', async (req, res) => {
+  try {
+    const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/pdf-manifest.json?t=${Date.now()}`);
+    if (!response.ok) return res.json({ categories: [] });
+    const data = await response.json();
+    let categories = Array.isArray(data.categories) ? data.categories.slice() : [];
+    const fromBooks = (data.books || []).map(b => b.category);
+    fromBooks.forEach(c => { if (c && !categories.includes(c)) categories.push(c); });
+    categories.sort();
+    res.json({ categories });
+  } catch (e) {
+    res.json({ categories: [] });
+  }
+});
+
+app.post('/pdf-category-create', async (req, res) => {
+  try {
+    const { name, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Nom manquant' });
+    const safeName = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!safeName) return res.status(400).json({ error: 'Nom invalide' });
+    const { manifestUrl, manifestContent, sha } = await getPdfManifest();
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (manifestContent.categories.includes(safeName)) return res.status(400).json({ error: 'Catégorie déjà existante' });
+    manifestContent.categories.push(safeName);
+    await putPdfManifest(manifestUrl, manifestContent, sha, `Nouvelle catégorie PDF : ${safeName}`);
+    res.json({ ok: true, category: safeName });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/pdf-category-rename', async (req, res) => {
+  try {
+    const { oldName, newName, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!oldName || !newName || !newName.trim()) return res.status(400).json({ error: 'Paramètres manquants' });
+    const safeNew = newName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!safeNew) return res.status(400).json({ error: 'Nom invalide' });
+    const { manifestUrl, manifestContent, sha } = await getPdfManifest();
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (safeNew !== oldName && manifestContent.categories.includes(safeNew)) return res.status(400).json({ error: 'Catégorie déjà existante' });
+    manifestContent.categories = manifestContent.categories.filter(c => c !== oldName);
+    manifestContent.categories.push(safeNew);
+    manifestContent.books.forEach(b => { if (b.category === oldName) b.category = safeNew; });
+    await putPdfManifest(manifestUrl, manifestContent, sha, `Renommage catégorie PDF : ${oldName} → ${safeNew}`);
+    res.json({ ok: true, category: safeNew });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+app.post('/pdf-category-delete', async (req, res) => {
+  try {
+    const { name, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!name) return res.status(400).json({ error: 'Nom manquant' });
+    const { manifestUrl, manifestContent, sha } = await getPdfManifest();
+    const inUse = manifestContent.books.some(b => b.category === name);
+    if (inUse) return res.status(400).json({ error: 'Catégorie non vide — impossible à supprimer' });
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    manifestContent.categories = manifestContent.categories.filter(c => c !== name);
+    await putPdfManifest(manifestUrl, manifestContent, sha, `Suppression catégorie PDF : ${name}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
 
 app.post('/pdf-delete', async (req, res) => {
   try {
