@@ -427,6 +427,23 @@ async function deleteGithubFile(path, message) {
   if (!delRes.ok) { const err = await delRes.json().catch(() => ({})); throw new Error('Suppression échouée : ' + (err.message || delRes.status)); }
 }
 
+// ── Créer un pack vide (sans publier de session) ─────────────────
+app.post('/library-create-pack', async (req, res) => {
+  try {
+    const { id, tier = 'gratuit', name, description = '', langPair = '', pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!id || !name) return res.status(400).json({ error: 'Identifiant et nom requis' });
+    const safeId = id.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!safeId) return res.status(400).json({ error: 'Identifiant invalide' });
+    const { manifestUrl, manifestContent, sha } = await getManifest();
+    if (manifestContent.packs.some(p => p.id === safeId)) return res.status(400).json({ error: 'Ce pack existe déjà' });
+    manifestContent.packs.push({ id: safeId, tier, name, description, langPair, path: `${tier}/${safeId}` });
+    await putManifest(manifestUrl, manifestContent, sha, `Nouveau pack : ${safeId}`);
+    res.json({ ok: true, id: safeId });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
 // ── Renommer un pack (nom/description affichés) ─────────────────
 app.post('/library-rename-pack', async (req, res) => {
   try {
