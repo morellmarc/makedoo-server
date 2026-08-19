@@ -132,7 +132,9 @@ app.post('/info-text', async (req, res) => {
       }
     }));
 
-    const data = { byLang, sourceLang, updated: new Date().toISOString() };
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
+    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {} };
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json(data);
   } catch (e) {
