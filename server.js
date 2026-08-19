@@ -140,6 +140,26 @@ app.post('/info-text', async (req, res) => {
   }
 });
 
+app.post('/info-youtube-link', (req, res) => {
+  try {
+    const { lang = '', url = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+      return res.status(403).json({ error: 'PIN incorrect' });
+    }
+    const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
+    if (!UI_LANGS.includes(lang)) return res.status(400).json({ error: 'Langue invalide' });
+    if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
+    let data = { byLang: {}, sourceLang: 'fr', updated: '' };
+    try { data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
+    if (!data.youtubeLinks) data.youtubeLinks = {};
+    if (url.trim()) { data.youtubeLinks[lang] = url.trim(); } else { delete data.youtubeLinks[lang]; }
+    fs.writeFileSync(INFO_FILE, JSON.stringify(data));
+    res.json({ ok: true, youtubeLinks: data.youtubeLinks });
+  } catch (e) {
+    res.status(500).json({ error: 'Erreur sauvegarde' });
+  }
+});
+
 // ── Traduction (Google) ────────────────────────────────────────
 app.post('/translate', async (req, res) => {
   try {
