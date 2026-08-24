@@ -60,8 +60,11 @@ const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const AZURE_KEY = process.env.AZURE_SPEECH_KEY;
 const AZURE_REGION = 'northeurope';
 const PORT = process.env.PORT || 3000;
-const COUNTER_FILE = path.join(__dirname, 'visits.json');
-const INFO_FILE = path.join(__dirname, 'info-text.json');
+
+const DATA_DIR = '/app/data';
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const COUNTER_FILE = path.join(DATA_DIR, 'visits.json');
+const INFO_FILE = path.join(DATA_DIR, 'info-text.json');
 
 // ── Comptes utilisateurs : base de données, email, sessions ─────
 const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
