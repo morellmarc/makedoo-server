@@ -3,9 +3,57 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const { Pool } = require('pg');
+const { Resend } = require('resend');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+
+const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
+const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 const app = express();
 app.use(cors());
+
+// ── Webhook Stripe : nécessite le corps brut (non parsé en JSON) pour vérifier la signature — doit être déclaré AVANT express.json() ──
+app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.status(503).send('Stripe non configuré');
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], STRIPE_WEBHOOK_SECRET);
+  } catch (e) {
+    return res.status(400).send(`Erreur de signature webhook : ${e.message}`);
+  }
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const userId = session.client_reference_id;
+      const customerId = session.customer;
+      const subscriptionId = session.subscription;
+      if (pool && userId) {
+        await pool.query(
+          'UPDATE users SET stripe_customer_id = $1, stripe_subscription_id = $2, subscription_status = $3 WHERE id = $4',
+          [customerId, subscriptionId, 'active', userId]
+        );
+      }
+    } else if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+      const subscription = event.data.object;
+      const status = subscription.status === 'active' ? 'active' : (event.type === 'customer.subscription.deleted' ? 'cancelled' : subscription.status);
+      const periodEnd = subscription.current_period_end ? new Date(subscription.current_period_end * 1000) : null;
+      if (pool) {
+        await pool.query(
+          'UPDATE users SET subscription_status = $1, subscription_current_period_end = $2 WHERE stripe_subscription_id = $3',
+          [status, periodEnd, subscription.id]
+        );
+      }
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error('Erreur traitement webhook Stripe:', e.message);
+    res.status(500).send('Erreur serveur');
+  }
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
@@ -14,6 +62,57 @@ const AZURE_REGION = 'northeurope';
 const PORT = process.env.PORT || 3000;
 const COUNTER_FILE = path.join(__dirname, 'visits.json');
 const INFO_FILE = path.join(__dirname, 'info-text.json');
+
+// ── Comptes utilisateurs : base de données, email, sessions ─────
+const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const JWT_SECRET = process.env.JWT_SECRET || 'makedoo-dev-secret-a-changer';
+const EMAIL_FROM = process.env.EMAIL_FROM || 'Makedoo <onboarding@resend.dev>';
+const APP_URL = process.env.APP_URL || 'https://morellmarc.github.io/makedoo-v3';
+
+async function initDb() {
+  if (!pool) { console.log('⚠️ DATABASE_URL non configuré — comptes utilisateurs désactivés'); return; }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        stripe_customer_id TEXT,
+        stripe_subscription_id TEXT,
+        subscription_status TEXT DEFAULT 'none',
+        subscription_current_period_end TIMESTAMPTZ
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS magic_tokens (
+        token TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        used BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log('✅ Base de données initialisée');
+  } catch (e) {
+    console.error('Erreur initialisation DB:', e.message);
+  }
+}
+initDb();
+
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Non connecté' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.userId = payload.userId;
+    req.userEmail = payload.email;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Session invalide ou expirée' });
+  }
+}
 
 // Voix Azure Neural par langue
 const AZURE_VOICES = {
@@ -159,6 +258,126 @@ app.post('/info-youtube-link', (req, res) => {
     res.json({ ok: true, youtubeLinks: data.youtubeLinks });
   } catch (e) {
     res.status(500).json({ error: 'Erreur sauvegarde' });
+  }
+});
+
+// ── Authentification par lien magique ────────────────────────────
+app.post('/auth/request-link', async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Comptes utilisateurs non disponibles' });
+  try {
+    const { email } = req.body;
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Adresse email invalide' });
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    await pool.query(
+      'INSERT INTO magic_tokens (token, email, expires_at) VALUES ($1, $2, $3)',
+      [token, normalizedEmail, expiresAt]
+    );
+    const link = `${APP_URL}/?authtoken=${token}`;
+    if (resend) {
+      await resend.emails.send({
+        from: EMAIL_FROM,
+        to: normalizedEmail,
+        subject: 'Votre lien de connexion Makedoo',
+        html: `<p>Bonjour,</p><p>Cliquez sur ce lien pour vous connecter à Makedoo (valable 15 minutes) :</p><p><a href="${link}">${link}</a></p><p>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>`
+      });
+    } else {
+      console.log('⚠️ RESEND_API_KEY non configuré — lien (dev only):', link);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/auth/verify', async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Comptes utilisateurs non disponibles' });
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Lien invalide' });
+    const result = await pool.query('SELECT * FROM magic_tokens WHERE token = $1', [token]);
+    const record = result.rows[0];
+    if (!record) return res.status(400).json({ error: 'Lien invalide' });
+    if (record.used) return res.status(400).json({ error: 'Ce lien a déjà été utilisé' });
+    if (new Date(record.expires_at) < new Date()) return res.status(400).json({ error: 'Ce lien a expiré' });
+    await pool.query('UPDATE magic_tokens SET used = TRUE WHERE token = $1', [token]);
+
+    let userResult = await pool.query('SELECT * FROM users WHERE email = $1', [record.email]);
+    let user = userResult.rows[0];
+    if (!user) {
+      const insertResult = await pool.query('INSERT INTO users (email) VALUES ($1) RETURNING *', [record.email]);
+      user = insertResult.rows[0];
+    }
+    const jwtToken = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '90d' });
+    res.json({
+      ok: true,
+      jwt: jwtToken,
+      email: user.email,
+      subscriptionStatus: user.subscription_status
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/auth/me', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT email, subscription_status, subscription_current_period_end FROM users WHERE id = $1', [req.userId]);
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    res.json({
+      email: user.email,
+      subscriptionStatus: user.subscription_status,
+      subscriptionEnd: user.subscription_current_period_end
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Paiement Stripe ────────────────────────────────────────────
+app.post('/create-checkout-session', requireAuth, async (req, res) => {
+  if (!stripe || !STRIPE_PRICE_ID) return res.status(503).json({ error: 'Paiement non configuré' });
+  try {
+    const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
+    const user = userResult.rows[0];
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    const sessionParams = {
+      mode: 'subscription',
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      client_reference_id: String(user.id),
+      success_url: `${APP_URL}/?subscription=success`,
+      cancel_url: `${APP_URL}/?subscription=cancelled`,
+    };
+    if (user.stripe_customer_id) {
+      sessionParams.customer = user.stripe_customer_id;
+    } else {
+      sessionParams.customer_email = user.email;
+    }
+    const session = await stripe.checkout.sessions.create(sessionParams);
+    res.json({ url: session.url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/create-portal-session', requireAuth, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Paiement non configuré' });
+  try {
+    const userResult = await pool.query('SELECT stripe_customer_id FROM users WHERE id = $1', [req.userId]);
+    const user = userResult.rows[0];
+    if (!user || !user.stripe_customer_id) return res.status(400).json({ error: 'Aucun abonnement associé' });
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: user.stripe_customer_id,
+      return_url: `${APP_URL}/`,
+    });
+    res.json({ url: portalSession.url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
