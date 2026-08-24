@@ -3,6 +3,7 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+console.log('DEBUG DATABASE_URL présent ?', !!process.env.DATABASE_URL, 'longueur:', (process.env.DATABASE_URL || '').length);
 const { Pool } = require('pg');
 const { Resend } = require('resend');
 const jwt = require('jsonwebtoken');
