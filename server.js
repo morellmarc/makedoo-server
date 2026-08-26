@@ -186,6 +186,11 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'makedoo-api', version: '2.0.0', tts: 'azure+google' });
 });
 
+// ── Info publique sur la durée d'essai gratuit (affichée avant connexion) ──
+app.get('/trial-info', (req, res) => {
+  res.json({ trialDays: TRIAL_DAYS });
+});
+
 // ── Compteur de visites ──────────────────────────────────────────
 function readVisits() {
   try { return JSON.parse(fs.readFileSync(COUNTER_FILE, 'utf8')); }
