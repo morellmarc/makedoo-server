@@ -73,6 +73,21 @@ const JWT_SECRET = process.env.JWT_SECRET || 'makedoo-dev-secret-a-changer';
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Makedoo <onboarding@resend.dev>';
 const APP_URL = process.env.APP_URL || 'https://morellmarc.github.io/makedoo-v3';
 
+// ── Essai gratuit paramétrable ────────────────────────────────
+// Nombre de jours d'accès complet offerts à partir de la création du compte.
+// Modifiable à tout moment via la variable Railway TRIAL_DAYS (ex: 14), sans toucher au code.
+const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || '14', 10);
+function computeAccess(user) {
+  const trialEnd = new Date(new Date(user.created_at).getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+  const inTrial = new Date() < trialEnd;
+  const subscribed = user.subscription_status === 'active';
+  return {
+    hasAccess: subscribed || inTrial,
+    trialEndsAt: trialEnd.toISOString(),
+    inTrial: inTrial && !subscribed
+  };
+}
+
 async function initDb() {
   if (!pool) { console.log('⚠️ DATABASE_URL non configuré — comptes utilisateurs désactivés'); return; }
   try {
@@ -315,11 +330,13 @@ app.post('/auth/verify', async (req, res) => {
       user = insertResult.rows[0];
     }
     const jwtToken = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '90d' });
+    const access = computeAccess(user);
     res.json({
       ok: true,
       jwt: jwtToken,
       email: user.email,
-      subscriptionStatus: user.subscription_status
+      subscriptionStatus: user.subscription_status,
+      ...access
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -328,13 +345,15 @@ app.post('/auth/verify', async (req, res) => {
 
 app.get('/auth/me', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT email, subscription_status, subscription_current_period_end FROM users WHERE id = $1', [req.userId]);
+    const result = await pool.query('SELECT email, created_at, subscription_status, subscription_current_period_end FROM users WHERE id = $1', [req.userId]);
     const user = result.rows[0];
     if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const access = computeAccess(user);
     res.json({
       email: user.email,
       subscriptionStatus: user.subscription_status,
-      subscriptionEnd: user.subscription_current_period_end
+      subscriptionEnd: user.subscription_current_period_end,
+      ...access
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
