@@ -73,6 +73,45 @@ const JWT_SECRET = process.env.JWT_SECRET || 'makedoo-dev-secret-a-changer';
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Makedoo <onboarding@resend.dev>';
 const APP_URL = process.env.APP_URL || 'https://morellmarc.github.io/makedoo-v3';
 
+// ── Localisation des emails et pages Stripe selon la langue d'interface ──
+// Les 17 langues de l'app ; les codes Stripe correspondent la plupart du temps,
+// sauf mk/sq/sr non supportés par Stripe : repli sur l'anglais (jamais le français).
+const STRIPE_LOCALE_MAP = {
+  fr: 'fr', en: 'en', es: 'es', de: 'de', it: 'it', tr: 'tr', bg: 'bg', el: 'el',
+  pt: 'pt', ro: 'ro', hu: 'hu', pl: 'pl', nl: 'nl', ru: 'ru', mk: 'en', sq: 'en', sr: 'en'
+};
+function toStripeLocale(lang) {
+  return STRIPE_LOCALE_MAP[lang] || 'en';
+}
+
+// Contenu de l'email du lien magique, dans les 17 langues d'interface (repli sur l'anglais si langue inconnue).
+const MAGIC_LINK_EMAILS = {
+  fr: { subject: 'Votre lien de connexion Makedoo', greeting: 'Bonjour,', body: 'Cliquez sur ce lien pour vous connecter à Makedoo (valable {hours} heures) :', ignore: "Si vous n'êtes pas à l'origine de cette demande, ignorez cet email." },
+  en: { subject: 'Your Makedoo login link', greeting: 'Hello,', body: 'Click this link to log in to Makedoo (valid for {hours} hours):', ignore: 'If you did not request this, please ignore this email.' },
+  mk: { subject: 'Вашиот линк за најавување на Makedoo', greeting: 'Здраво,', body: 'Кликнете на овој линк за да се најавите на Makedoo (важи {hours} часа):', ignore: 'Ако не сте го побарале ова, игнорирајте го овој е-маил.' },
+  es: { subject: 'Tu enlace de acceso a Makedoo', greeting: 'Hola,', body: 'Haz clic en este enlace para acceder a Makedoo (válido durante {hours} horas):', ignore: 'Si no has solicitado esto, ignora este correo.' },
+  de: { subject: 'Ihr Makedoo-Anmeldelink', greeting: 'Hallo,', body: 'Klicken Sie auf diesen Link, um sich bei Makedoo anzumelden (gültig für {hours} Stunden):', ignore: 'Wenn Sie dies nicht angefordert haben, ignorieren Sie diese E-Mail.' },
+  it: { subject: 'Il tuo link di accesso a Makedoo', greeting: 'Ciao,', body: 'Clicca su questo link per accedere a Makedoo (valido per {hours} ore):', ignore: 'Se non hai richiesto questo, ignora questa email.' },
+  tr: { subject: 'Makedoo giriş bağlantınız', greeting: 'Merhaba,', body: "Makedoo'ya giriş yapmak için bu bağlantıya tıklayın ({hours} saat geçerlidir):", ignore: 'Bunu siz talep etmediyseniz, bu e-postayı yok sayın.' },
+  sq: { subject: 'Lidhja juaj e hyrjes në Makedoo', greeting: 'Përshëndetje,', body: 'Klikoni këtë lidhje për t\'u kyçur në Makedoo (e vlefshme për {hours} orë):', ignore: 'Nëse nuk e keni kërkuar këtë, injoroni këtë email.' },
+  sr: { subject: 'Ваш линк за пријаву на Makedoo', greeting: 'Здраво,', body: 'Кликните на овај линк да се пријавите на Makedoo (важи {hours} сати):', ignore: 'Ако ово нисте затражили, игноришите овај имејл.' },
+  bg: { subject: 'Вашият линк за вход в Makedoo', greeting: 'Здравейте,', body: 'Кликнете върху този линк, за да влезете в Makedoo (валиден {hours} часа):', ignore: 'Ако не сте поискали това, игнорирайте този имейл.' },
+  el: { subject: 'Ο σύνδεσμος σύνδεσής σας στο Makedoo', greeting: 'Γεια σας,', body: 'Κάντε κλικ σε αυτόν τον σύνδεσμο για να συνδεθείτε στο Makedoo (ισχύει για {hours} ώρες):', ignore: 'Αν δεν το ζητήσατε εσείς, αγνοήστε αυτό το email.' },
+  pt: { subject: 'O seu link de acesso ao Makedoo', greeting: 'Olá,', body: 'Clique neste link para entrar no Makedoo (válido por {hours} horas):', ignore: 'Se não foi você que solicitou isto, ignore este email.' },
+  ro: { subject: 'Linkul dvs. de conectare Makedoo', greeting: 'Bună,', body: 'Faceți clic pe acest link pentru a vă conecta la Makedoo (valabil {hours} ore):', ignore: 'Dacă nu ați solicitat acest lucru, ignorați acest email.' },
+  hu: { subject: 'Makedoo bejelentkezési linkje', greeting: 'Üdvözöljük,', body: 'Kattintson erre a linkre a Makedoo-ba való bejelentkezéshez ({hours} óráig érvényes):', ignore: 'Ha nem Ön kérte ezt, hagyja figyelmen kívül ezt az e-mailt.' },
+  pl: { subject: 'Twój link logowania do Makedoo', greeting: 'Cześć,', body: 'Kliknij ten link, aby zalogować się do Makedoo (ważny przez {hours} godzin):', ignore: 'Jeśli to nie Ty poprosiłeś o to, zignoruj tę wiadomość.' },
+  nl: { subject: 'Uw Makedoo-inloglink', greeting: 'Hallo,', body: 'Klik op deze link om in te loggen bij Makedoo (geldig voor {hours} uur):', ignore: 'Als u dit niet heeft aangevraagd, negeer dan deze e-mail.' },
+  ru: { subject: 'Ваша ссылка для входа в Makedoo', greeting: 'Здравствуйте,', body: 'Перейдите по этой ссылке, чтобы войти в Makedoo (действительна {hours} часов):', ignore: 'Если вы не запрашивали это, проигнорируйте это письмо.' }
+};
+function buildMagicLinkEmail(lang, link, hours) {
+  const t = MAGIC_LINK_EMAILS[lang] || MAGIC_LINK_EMAILS.en;
+  return {
+    subject: t.subject,
+    html: `<p>${t.greeting}</p><p>${t.body.replace('{hours}', hours)}</p><p><a href="${link}">${link}</a></p><p>${t.ignore}</p>`
+  };
+}
+
 // ── Essai gratuit paramétrable ────────────────────────────────
 // Nombre de jours d'accès complet offerts à partir de la création du compte.
 // Modifiable à tout moment via la variable Railway TRIAL_DAYS (ex: 14), sans toucher au code.
@@ -285,27 +324,29 @@ app.post('/info-youtube-link', (req, res) => {
 });
 
 // ── Authentification par lien magique ────────────────────────────
+const MAGIC_LINK_VALID_HOURS = 12;
 app.post('/auth/request-link', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Comptes utilisateurs non disponibles' });
   try {
-    const { email } = req.body;
+    const { email, lang } = req.body;
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Adresse email invalide' });
     }
     const normalizedEmail = email.trim().toLowerCase();
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    const expiresAt = new Date(Date.now() + MAGIC_LINK_VALID_HOURS * 60 * 60 * 1000);
     await pool.query(
       'INSERT INTO magic_tokens (token, email, expires_at) VALUES ($1, $2, $3)',
       [token, normalizedEmail, expiresAt]
     );
     const link = `${APP_URL}/?authtoken=${token}`;
     if (resend) {
+      const { subject, html } = buildMagicLinkEmail(lang, link, MAGIC_LINK_VALID_HOURS);
       await resend.emails.send({
         from: EMAIL_FROM,
         to: normalizedEmail,
-        subject: 'Votre lien de connexion Makedoo',
-        html: `<p>Bonjour,</p><p>Cliquez sur ce lien pour vous connecter à Makedoo (valable 15 minutes) :</p><p><a href="${link}">${link}</a></p><p>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>`
+        subject,
+        html
       });
     } else {
       console.log('⚠️ RESEND_API_KEY non configuré — lien (dev only):', link);
@@ -378,6 +419,7 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
     const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
     const user = userResult.rows[0];
     if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const stripeLocale = toStripeLocale(req.body.lang);
 
     const sessionParams = {
       mode: 'subscription',
@@ -385,11 +427,20 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
       client_reference_id: String(user.id),
       success_url: `${APP_URL}/?subscription=success`,
       cancel_url: `${APP_URL}/?subscription=cancelled`,
+      locale: stripeLocale,
     };
     if (user.stripe_customer_id) {
+      // Client existant : on aligne sa préférence de langue sur celle demandée maintenant,
+      // pour que les futurs emails/factures Stripe la suivent aussi.
+      try {
+        await stripe.customers.update(user.stripe_customer_id, { preferred_locales: [stripeLocale] });
+      } catch (e) { /* non bloquant */ }
       sessionParams.customer = user.stripe_customer_id;
     } else {
-      sessionParams.customer_email = user.email;
+      // Nouveau client : on le crée nous-mêmes avec sa langue préférée, pour que les emails
+      // de reçu/facture Stripe suivent aussi cette langue (pas seulement la page de paiement).
+      const customer = await stripe.customers.create({ email: user.email, preferred_locales: [stripeLocale] });
+      sessionParams.customer = customer.id;
     }
     let session;
     try {
@@ -417,10 +468,12 @@ app.post('/create-portal-session', requireAuth, async (req, res) => {
     const userResult = await pool.query('SELECT stripe_customer_id FROM users WHERE id = $1', [req.userId]);
     const user = userResult.rows[0];
     if (!user || !user.stripe_customer_id) return res.status(400).json({ error: 'Aucun abonnement associé' });
+    const stripeLocale = toStripeLocale(req.body.lang);
     try {
       const portalSession = await stripe.billingPortal.sessions.create({
         customer: user.stripe_customer_id,
         return_url: `${APP_URL}/`,
+        locale: stripeLocale,
       });
       res.json({ url: portalSession.url });
     } catch (e) {
