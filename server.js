@@ -366,6 +366,12 @@ app.get('/auth/me', requireAuth, async (req, res) => {
 });
 
 // ── Paiement Stripe ────────────────────────────────────────────
+// Détecte l'erreur Stripe typique quand un identifiant (client, etc.) a été créé dans l'autre
+// mode (test/live) que celui de la clé actuellement utilisée.
+function isTestLiveMismatch(e) {
+  return typeof e.message === 'string' && /similar object exists in (test|live) mode/i.test(e.message);
+}
+
 app.post('/create-checkout-session', requireAuth, async (req, res) => {
   if (!stripe || !STRIPE_PRICE_ID) return res.status(503).json({ error: 'Paiement non configuré' });
   try {
@@ -385,7 +391,20 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
     } else {
       sessionParams.customer_email = user.email;
     }
-    const session = await stripe.checkout.sessions.create(sessionParams);
+    let session;
+    try {
+      session = await stripe.checkout.sessions.create(sessionParams);
+    } catch (e) {
+      // L'identifiant client stocké appartient à l'autre mode (test/live) — on l'oublie et on repart avec l'email
+      if (isTestLiveMismatch(e) && sessionParams.customer) {
+        await pool.query('UPDATE users SET stripe_customer_id = NULL WHERE id = $1', [user.id]);
+        delete sessionParams.customer;
+        sessionParams.customer_email = user.email;
+        session = await stripe.checkout.sessions.create(sessionParams);
+      } else {
+        throw e;
+      }
+    }
     res.json({ url: session.url });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -398,11 +417,23 @@ app.post('/create-portal-session', requireAuth, async (req, res) => {
     const userResult = await pool.query('SELECT stripe_customer_id FROM users WHERE id = $1', [req.userId]);
     const user = userResult.rows[0];
     if (!user || !user.stripe_customer_id) return res.status(400).json({ error: 'Aucun abonnement associé' });
-    const portalSession = await stripe.billingPortal.sessions.create({
-      customer: user.stripe_customer_id,
-      return_url: `${APP_URL}/`,
-    });
-    res.json({ url: portalSession.url });
+    try {
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: user.stripe_customer_id,
+        return_url: `${APP_URL}/`,
+      });
+      res.json({ url: portalSession.url });
+    } catch (e) {
+      if (isTestLiveMismatch(e)) {
+        // Abonnement de test obsolète : on nettoie la base et on invite à se réabonner proprement
+        await pool.query(
+          'UPDATE users SET stripe_customer_id = NULL, stripe_subscription_id = NULL, subscription_status = $1 WHERE id = $2',
+          ['none', req.userId]
+        );
+        return res.status(400).json({ error: 'Votre ancien abonnement de test n\'est plus valide. Merci de vous réabonner.' });
+      }
+      throw e;
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
