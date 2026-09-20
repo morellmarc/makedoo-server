@@ -114,8 +114,8 @@ function buildMagicLinkEmail(lang, link, hours) {
 
 // ── Essai gratuit paramétrable ────────────────────────────────
 // Nombre de jours d'accès complet offerts à partir de la création du compte.
-// Modifiable à tout moment via la variable Railway TRIAL_DAYS (ex: 14), sans toucher au code.
-const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || '14', 10);
+// Modifiable à tout moment via la variable Railway TRIAL_DAYS (ex: 30), sans toucher au code.
+const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || '30', 10);
 function computeAccess(user) {
   const trialEnd = new Date(new Date(user.created_at).getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
   const inTrial = new Date() < trialEnd;
