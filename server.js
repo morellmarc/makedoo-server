@@ -597,6 +597,22 @@ async function azureSTT(audioBase64, languageCode, contentType) {
   return transcript;
 }
 
+// ── Appel Google Speech-to-Text (synchrone) — factorisé pour être réutilisé par /stt et /stt-file ─
+async function googleSTTRecognize(base64Audio, languageCode, encoding = 'WEBM_OPUS', sampleRateHertz = 48000) {
+  const response = await fetch(
+    `https://speech.googleapis.com/v1/speech:recognize?key=${GOOGLE_KEY}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        config: { encoding, sampleRateHertz, languageCode, enableAutomaticPunctuation: true, model: 'default' },
+        audio: { content: base64Audio }
+      }) }
+  );
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  // Un tronçon peut contenir plusieurs "results" (plusieurs pauses détectées par Google) — on les recolle
+  return (data.results || []).map(r => r.alternatives?.[0]?.transcript || '').filter(Boolean).join(' ');
+}
+
 // ── STT (Azure prioritaire pour certaines langues, sinon Google) ─
 app.post('/stt', async (req, res) => {
   try {
@@ -622,19 +638,157 @@ app.post('/stt', async (req, res) => {
       }
     }
 
-    const response = await fetch(
-      `https://speech.googleapis.com/v1/speech:recognize?key=${GOOGLE_KEY}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          config: { encoding: googleEncoding, sampleRateHertz, languageCode, enableAutomaticPunctuation: true, model: 'default' },
-          audio: { content: audio }
-        }) }
-    );
-    const data = await response.json();
-    if (data.error) return res.status(500).json({ error: data.error.message });
-    const transcript = data.results?.[0]?.alternatives?.[0]?.transcript || '';
+    const transcript = await googleSTTRecognize(audio, languageCode, googleEncoding, sampleRateHertz);
     res.json({ transcript, engine: 'google', azureError });
   } catch (e) { res.status(500).json({ error: e.message }) }
+});
+
+// ── STT sur fichier importé (mp3/wav/…) — découpage sur silences + STT tronçon par tronçon ─
+const multer = require('multer');
+const { execFile } = require('child_process');
+const util = require('util');
+const os = require('os');
+const execFileAsync = util.promisify(execFile);
+const ffmpegPath = require('ffmpeg-static');
+
+const STT_FILE_TMP_ROOT = path.join(os.tmpdir(), 'makedoo-sttfile');
+if (!fs.existsSync(STT_FILE_TMP_ROOT)) fs.mkdirSync(STT_FILE_TMP_ROOT, { recursive: true });
+
+const sttFileUpload = multer({
+  dest: STT_FILE_TMP_ROOT,
+  limits: { fileSize: 100 * 1024 * 1024 } // 100 Mo — large marge pour ~90 min de mp3
+});
+
+const sttFileSessions = new Map(); // sessionId -> { wavPath, boundaries, languageCode, tmpDir, createdAt }
+
+function cleanupSttFileSession(sessionId) {
+  const s = sttFileSessions.get(sessionId);
+  if (!s) return;
+  try { fs.rmSync(s.tmpDir, { recursive: true, force: true }); } catch (e) {}
+  sttFileSessions.delete(sessionId);
+}
+// Purge des sessions abandonnées (fichier temp orphelin si le client ne va jamais au bout)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of sttFileSessions) {
+    if (now - s.createdAt > 45 * 60 * 1000) cleanupSttFileSession(id);
+  }
+}, 5 * 60 * 1000).unref();
+
+// Convertit n'importe quel fichier audio en WAV mono 16kHz PCM16 (format le plus fiable pour Google STT)
+async function normalizeToWav(inputPath, outputPath) {
+  await execFileAsync(ffmpegPath, ['-y', '-i', inputPath, '-ac', '1', '-ar', '16000', '-f', 'wav', outputPath], { maxBuffer: 1024 * 1024 * 20 });
+}
+
+// Lit la durée totale (en secondes) depuis les logs ffmpeg
+async function getAudioDuration(wavPath) {
+  let stderr = '';
+  try {
+    const r = await execFileAsync(ffmpegPath, ['-i', wavPath, '-f', 'null', '-'], { maxBuffer: 1024 * 1024 * 20 });
+    stderr = r.stderr || '';
+  } catch (e) {
+    stderr = e.stderr || '';
+  }
+  const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+  if (!m) return 0;
+  return (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
+}
+
+// Détecte les silences (pauses de parole) pour caler les coupures dessus plutôt qu'en plein mot
+async function detectSilences(wavPath, noiseDb = '-30dB', minDur = 0.4) {
+  let stderr = '';
+  try {
+    const r = await execFileAsync(ffmpegPath, ['-i', wavPath, '-af', `silencedetect=noise=${noiseDb}:d=${minDur}`, '-f', 'null', '-'], { maxBuffer: 1024 * 1024 * 40 });
+    stderr = r.stderr || '';
+  } catch (e) {
+    stderr = e.stderr || '';
+  }
+  const starts = [...stderr.matchAll(/silence_start:\s*([\d.]+)/g)].map(m => parseFloat(m[1]));
+  const ends = [...stderr.matchAll(/silence_end:\s*([\d.]+)/g)].map(m => parseFloat(m[1]));
+  const silences = [];
+  for (let i = 0; i < Math.min(starts.length, ends.length); i++) {
+    silences.push({ mid: (starts[i] + ends[i]) / 2 });
+  }
+  return silences;
+}
+
+// Calcule les bornes de tronçons (~48s visées), calées sur le silence le plus proche si possible
+function computeChunkBoundaries(duration, silences, target = 48, maxDrift = 15) {
+  const boundaries = [];
+  let cursor = 0;
+  while (cursor < duration - 0.05) {
+    const idealCut = cursor + target;
+    if (idealCut >= duration) { boundaries.push({ start: cursor, end: duration }); break; }
+    let best = null, bestDist = Infinity;
+    for (const s of silences) {
+      if (s.mid <= cursor + 5) continue; // évite des tronçons trop courts
+      const dist = Math.abs(s.mid - idealCut);
+      if (dist < bestDist && dist <= maxDrift) { bestDist = dist; best = s.mid; }
+    }
+    const cut = best !== null ? best : idealCut; // repli : coupe franche si aucun silence à proximité
+    boundaries.push({ start: cursor, end: cut });
+    cursor = cut;
+  }
+  if (!boundaries.length) boundaries.push({ start: 0, end: duration });
+  return boundaries;
+}
+
+async function extractChunk(wavPath, start, end, outPath) {
+  const dur = Math.max(0.15, end - start);
+  await execFileAsync(ffmpegPath, ['-y', '-i', wavPath, '-ss', String(start), '-t', String(dur), '-ac', '1', '-ar', '16000', '-f', 'wav', outPath], { maxBuffer: 1024 * 1024 * 10 });
+}
+
+// Étape 1 : upload du fichier, normalisation, détection des tronçons — répond vite (pas encore de STT)
+app.post('/stt-file/start', sttFileUpload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Fichier audio manquant' });
+  const languageCode = req.body.languageCode || 'fr-FR';
+  const sessionId = crypto.randomUUID();
+  const tmpDir = path.join(STT_FILE_TMP_ROOT, sessionId);
+  try {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const wavPath = path.join(tmpDir, 'normalized.wav');
+    await normalizeToWav(req.file.path, wavPath);
+    fs.unlink(req.file.path, () => {});
+    const duration = await getAudioDuration(wavPath);
+    if (!duration || duration <= 0) throw new Error('Durée audio introuvable — fichier invalide ?');
+    if (duration > 90 * 60) throw new Error('Fichier trop long (maximum 90 minutes)');
+    const silences = await detectSilences(wavPath);
+    const boundaries = computeChunkBoundaries(duration, silences);
+    sttFileSessions.set(sessionId, { wavPath, boundaries, languageCode, tmpDir, createdAt: Date.now() });
+    res.json({ sessionId, totalChunks: boundaries.length, duration });
+  } catch (e) {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    try { if (req.file) fs.unlink(req.file.path, () => {}); } catch (_) {}
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Étape 2 : le client appelle cette route une fois par tronçon, dans l'ordre — permet une barre de
+// progression et évite une requête unique trop longue (risque de timeout pour un fichier de 20+ min)
+app.post('/stt-file/chunk', async (req, res) => {
+  const { sessionId, index } = req.body;
+  const s = sttFileSessions.get(sessionId);
+  if (!s) return res.status(404).json({ error: 'Session expirée ou introuvable — réimportez le fichier' });
+  const b = s.boundaries[index];
+  if (!b) return res.status(400).json({ error: 'Index de tronçon invalide' });
+  const chunkPath = path.join(s.tmpDir, `chunk_${index}.wav`);
+  try {
+    await extractChunk(s.wavPath, b.start, b.end, chunkPath);
+    const base64 = fs.readFileSync(chunkPath).toString('base64');
+    fs.unlink(chunkPath, () => {});
+    const transcript = await googleSTTRecognize(base64, s.languageCode, 'LINEAR16', 16000);
+    const isLast = Number(index) === s.boundaries.length - 1;
+    if (isLast) cleanupSttFileSession(sessionId);
+    res.json({ transcript, index: Number(index), isLast, start: b.start, end: b.end });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Annulation côté utilisateur en cours de route — libère les fichiers temporaires tout de suite
+app.post('/stt-file/cancel', (req, res) => {
+  cleanupSttFileSession(req.body.sessionId);
+  res.json({ ok: true });
 });
 
 // ── Publication vers makedoo-library (GitHub) ──────────────────
