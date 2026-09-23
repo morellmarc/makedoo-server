@@ -72,6 +72,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 const JWT_SECRET = process.env.JWT_SECRET || 'makedoo-dev-secret-a-changer';
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Makedoo <onboarding@resend.dev>';
 const APP_URL = process.env.APP_URL || 'https://morellmarc.github.io/makedoo-v3';
+const ADMIN_NOTIFY_EMAIL = process.env.ADMIN_NOTIFY_EMAIL || 'marc.morell@gmail.com';
 
 // ── Localisation des emails et pages Stripe selon la langue d'interface ──
 // Les 17 langues de l'app ; les codes Stripe correspondent la plupart du temps,
@@ -325,6 +326,24 @@ app.post('/info-youtube-link', (req, res) => {
 
 // ── Authentification par lien magique ────────────────────────────
 const MAGIC_LINK_VALID_HOURS = 12;
+// Notifie l'administrateur (fire-and-forget) à chaque demande de lien de connexion —
+// ne doit jamais faire échouer la connexion de l'utilisateur si l'envoi rate
+async function notifyAdminOfLoginRequest(email, isNewUser) {
+  if (!resend || !ADMIN_NOTIFY_EMAIL) return;
+  try {
+    await resend.emails.send({
+      from: EMAIL_FROM,
+      to: ADMIN_NOTIFY_EMAIL,
+      subject: (isNewUser ? '🆕 Nouvel utilisateur Makedoo : ' : '🔑 Connexion Makedoo : ') + email,
+      html: `<p>${isNewUser ? 'Nouvelle inscription' : 'Demande de connexion (utilisateur existant)'} sur Makedoo.</p>
+             <p><strong>Email :</strong> ${email}<br>
+             <strong>Date :</strong> ${new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Skopje' })}</p>`
+    });
+  } catch (e) {
+    console.log('⚠️ Échec notification admin:', e.message);
+  }
+}
+
 app.post('/auth/request-link', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Comptes utilisateurs non disponibles' });
   try {
@@ -351,6 +370,10 @@ app.post('/auth/request-link', async (req, res) => {
     } else {
       console.log('⚠️ RESEND_API_KEY non configuré — lien (dev only):', link);
     }
+    // Notification admin — ne bloque pas la réponse à l'utilisateur si elle échoue ou tarde
+    pool.query('SELECT 1 FROM users WHERE email = $1', [normalizedEmail])
+      .then(r => notifyAdminOfLoginRequest(normalizedEmail, r.rows.length === 0))
+      .catch(() => notifyAdminOfLoginRequest(normalizedEmail, false));
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
