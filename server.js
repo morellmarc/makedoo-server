@@ -66,6 +66,29 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const COUNTER_FILE = path.join(DATA_DIR, 'visits.json');
 const INFO_FILE = path.join(DATA_DIR, 'info-text.json');
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Appelle l'API Google Translate avec retry/backoff sur "rate limit exceeded".
+// q peut être une string ou un tableau de strings.
+async function googleTranslate(q, source, target, { retries = 3, baseDelay = 800 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const response = await fetch(
+      `https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_KEY}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q, source, target, format: 'text' }) }
+    );
+    const data = await response.json();
+    if (data.data?.translations) return data;
+    const msg = data.error?.message || '';
+    const isRateLimit = /rate limit/i.test(msg) || response.status === 429;
+    if (isRateLimit && attempt < retries) {
+      await sleep(baseDelay * Math.pow(2, attempt)); // 800ms, 1.6s, 3.2s
+      continue;
+    }
+    return data; // erreur définitive (autre que rate limit, ou tentatives épuisées)
+  }
+}
+
 // ── Comptes utilisateurs : base de données, email, sessions ─────
 const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -273,17 +296,13 @@ app.post('/info-text', async (req, res) => {
     const byLang = { [sourceLang]: { text } };
 
     // Traduction automatique vers toutes les langues d'interface, ligne par ligne (préserve les sauts de paragraphe)
+    // Traitement SÉQUENTIEL (pas Promise.all) pour ne pas dépasser le quota "requêtes/seconde" de la clé Google.
     const targets = UI_LANGS.filter(l => l !== sourceLang);
-    await Promise.all(targets.map(async (target) => {
+    const nonEmpty = lines.map((l, i) => ({ i, l })).filter(x => x.l.trim());
+    for (const target of targets) {
+      if (!nonEmpty.length) { byLang[target] = { text: '' }; continue; }
       try {
-        const nonEmpty = lines.map((l, i) => ({ i, l })).filter(x => x.l.trim());
-        if (!nonEmpty.length) { byLang[target] = { text: '' }; return; }
-        const response = await fetch(
-          `https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_KEY}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ q: nonEmpty.map(x => x.l), source: sourceLang, target, format: 'text' }) }
-        );
-        const data = await response.json();
+        const data = await googleTranslate(nonEmpty.map(x => x.l), sourceLang, target);
         const translatedLines = [...lines];
         if (data.data?.translations) {
           nonEmpty.forEach((x, idx) => { translatedLines[x.i] = data.data.translations[idx].translatedText; });
@@ -295,7 +314,8 @@ app.post('/info-text', async (req, res) => {
         console.error(`[info-text] Exception traduction vers "${target}":`, e.message);
         byLang[target] = { text: '', error: e.message };
       }
-    }));
+      await sleep(150); // petit espacement entre chaque langue, en plus du retry interne
+    }
 
     let existing = {};
     try { existing = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
@@ -523,13 +543,11 @@ app.post('/translate', async (req, res) => {
   try {
     const { text, source, target } = req.body;
     if (!text || !source || !target) return res.status(400).json({ error: 'Paramètres manquants' });
-    const response = await fetch(
-      `https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_KEY}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: text, source, target, format: 'text' }) }
-    );
-    const data = await response.json();
-    if (data.error) return res.status(500).json({ error: data.error.message });
+    const data = await googleTranslate(text, source, target);
+    if (!data.data?.translations) {
+      console.error(`[translate] Échec ${source}->${target}:`, data.error?.message || JSON.stringify(data));
+      return res.status(500).json({ error: data.error?.message || 'Échec traduction' });
+    }
     res.json({ translated: data.data.translations[0].translatedText });
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
