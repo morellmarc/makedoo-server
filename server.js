@@ -287,10 +287,13 @@ app.post('/info-text', async (req, res) => {
         const translatedLines = [...lines];
         if (data.data?.translations) {
           nonEmpty.forEach((x, idx) => { translatedLines[x.i] = data.data.translations[idx].translatedText; });
+        } else {
+          console.error(`[info-text] Échec traduction vers "${target}":`, data.error?.message || JSON.stringify(data));
         }
-        byLang[target] = { text: translatedLines.join('\n') };
+        byLang[target] = { text: translatedLines.join('\n'), error: data.data ? undefined : (data.error?.message || 'Échec traduction') };
       } catch (e) {
-        byLang[target] = { text: '' };
+        console.error(`[info-text] Exception traduction vers "${target}":`, e.message);
+        byLang[target] = { text: '', error: e.message };
       }
     }));
 
