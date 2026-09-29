@@ -70,7 +70,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Appelle l'API Google Translate avec retry/backoff sur "rate limit exceeded".
 // q peut être une string ou un tableau de strings.
-async function googleTranslate(q, source, target, { retries = 3, baseDelay = 800 } = {}) {
+async function googleTranslate(q, source, target, { retries = 5, baseDelay = 1200 } = {}) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const response = await fetch(
       `https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_KEY}`,
@@ -314,7 +314,7 @@ app.post('/info-text', async (req, res) => {
         console.error(`[info-text] Exception traduction vers "${target}":`, e.message);
         byLang[target] = { text: '', error: e.message };
       }
-      await sleep(150); // petit espacement entre chaque langue, en plus du retry interne
+      await sleep(500); // espacement entre chaque langue, en plus du retry interne
     }
 
     let existing = {};
