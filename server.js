@@ -1426,6 +1426,38 @@ app.post('/pdf-rename', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
+// ── Édition complète d'une fiche (titre, lien, type, langue, catégorie) — textes PDF et audios ──
+// L'identifiant (id) reste inchangé même si titre/catégorie/langue changent : il sert seulement de clé stable.
+async function updateCatalogItem(kind, req, res) {
+  try {
+    const { id, title, url, type, lang, category, pin } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+    if (!id || !title || !title.trim() || !url || !category || !category.trim()) return res.status(400).json({ error: 'Paramètres manquants (titre, lien, catégorie)' });
+    if (!/^https?:\/\//i.test(url.trim())) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
+    const safeCategory = category.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!safeCategory) return res.status(400).json({ error: 'Catégorie invalide' });
+    const isAudio = kind === 'audio';
+    const { manifestUrl, manifestContent, sha } = isAudio ? await getAudioManifest() : await getPdfManifest();
+    const list = isAudio ? manifestContent.tracks : manifestContent.books;
+    const item = list.find(x => x.id === id);
+    if (!item) return res.status(404).json({ error: 'Fiche introuvable' });
+    item.title = title.trim();
+    item.url = url.trim();
+    if (type) item.type = type;
+    if (lang) item.lang = lang;
+    item.category = safeCategory;
+    if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+    if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
+    const msg = `Modification ${isAudio ? 'audio' : 'PDF'} : ${id}`;
+    if (isAudio) await putAudioManifest(manifestUrl, manifestContent, sha, msg);
+    else await putPdfManifest(manifestUrl, manifestContent, sha, msg);
+    res.json({ ok: true, item });
+  } catch (e) { res.status(500).json({ error: e.message }) }
+}
+app.post('/pdf-update', (req, res) => updateCatalogItem('pdf', req, res));
+app.post('/audio-update', (req, res) => updateCatalogItem('audio', req, res));
+
 app.get('/debug-github-token', (req, res) => {
   res.json({
     present: !!GITHUB_TOKEN,
