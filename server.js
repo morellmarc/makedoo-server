@@ -1097,8 +1097,6 @@ app.post('/publish-audio', async (req, res) => {
     if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
 
     const safeCategory = category.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-    const safeTitleSlug = title.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-    const trackId = `${safeCategory}-${safeTitleSlug}-${lang}`;
 
     // Mise à jour du catalogue audio-manifest.json (le fichier lui-même reste hébergé sur pCloud)
     const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/audio-manifest.json`;
@@ -1114,6 +1112,7 @@ app.post('/publish-audio', async (req, res) => {
     } catch (e) {}
     if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
+    const trackId = makeCatalogId(manifestContent.tracks, safeCategory, title, lang);
     manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
     manifestContent.tracks.push({ id: trackId, title, lang, type, category: safeCategory, url });
     manifestContent.updated = new Date().toISOString().split('T')[0];
@@ -1254,6 +1253,28 @@ app.post('/verify-admin-pin', (req, res) => {
   res.json({ ok: pin === (process.env.INFO_PIN || 'makohrid') });
 });
 
+// ── Identifiant de fiche (catalogue PDF / audio) ─────────────────
+// L'ancien calcul supprimait tout caractère non latin : un titre cyrillique donnait un identifiant vide
+// ("biography--mk"), donc deux livres macédoniens de la même catégorie s'écrasaient mutuellement.
+const CYR_MAP = { а:'a',б:'b',в:'v',г:'g',д:'d',ѓ:'gj',е:'e',ж:'zh',з:'z',ѕ:'dz',и:'i',ј:'j',к:'k',л:'l',љ:'lj',м:'m',н:'n',њ:'nj',о:'o',п:'p',р:'r',с:'s',т:'t',ќ:'kj',у:'u',ф:'f',х:'h',ц:'c',ч:'ch',џ:'dj',ш:'sh',ы:'y',э:'e',ю:'yu',я:'ya',ё:'e',й:'j',щ:'sht',ъ:'a',ь:'' };
+function slugify(str) {
+  const base = String(str || '').trim().toLowerCase()
+    .replace(/[\u0400-\u04ff]/g, ch => (ch in CYR_MAP ? CYR_MAP[ch] : ''))
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  return base;
+}
+// Retourne un id unique dans la liste : même titre+catégorie+langue => même id (republier = mettre à jour),
+// titre différent mais id identique => suffixe -2, -3… pour ne jamais écraser une autre fiche.
+function makeCatalogId(list, safeCategory, title, lang) {
+  let slug = slugify(title);
+  if (!slug) slug = 'texte-' + crypto.createHash('md5').update(String(title)).digest('hex').slice(0, 6);
+  const baseId = `${safeCategory}-${slug}-${lang}`;
+  let id = baseId, n = 2;
+  while (list.some(x => x.id === id && (x.title || '').trim() !== title.trim())) id = `${baseId}-${n++}`;
+  return id;
+}
+
 // ── Bibliothèque de livres PDF (déjà hébergés sur pCloud) ────────
 app.get('/pdf-manifest', async (req, res) => {
   try {
@@ -1275,8 +1296,6 @@ app.post('/publish-pdf', async (req, res) => {
     if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
 
     const safeCategory = category.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-    const safeTitleSlug = title.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-    const bookId = `${safeCategory}-${safeTitleSlug}-${lang}`;
 
     const manifestUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/pdf-manifest.json`;
     let manifestContent = { version: '1.0', updated: '', categories: [], books: [] };
@@ -1291,6 +1310,7 @@ app.post('/publish-pdf', async (req, res) => {
     } catch (e) {}
     if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
+    const bookId = makeCatalogId(manifestContent.books, safeCategory, title, lang);
     manifestContent.books = manifestContent.books.filter(b => b.id !== bookId);
     manifestContent.books.push({ id: bookId, title, lang, type, category: safeCategory, url });
     manifestContent.updated = new Date().toISOString().split('T')[0];
