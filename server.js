@@ -319,7 +319,7 @@ app.post('/info-text', async (req, res) => {
 
     let existing = {};
     try { existing = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
-    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {} };
+    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {}, pdfLinks: existing.pdfLinks || {} };
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json(data);
   } catch (e) {
@@ -342,6 +342,26 @@ app.post('/info-youtube-link', (req, res) => {
     if (url.trim()) { data.youtubeLinks[lang] = url.trim(); } else { delete data.youtubeLinks[lang]; }
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json({ ok: true, youtubeLinks: data.youtubeLinks });
+  } catch (e) {
+    res.status(500).json({ error: 'Erreur sauvegarde' });
+  }
+});
+
+// Livre de la bibliothèque associé au bouton "PDF Tuto" de l'écran d'accueil (un livre par langue d'interface)
+app.post('/info-pdf-link', (req, res) => {
+  try {
+    const { lang = '', bookId = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+      return res.status(403).json({ error: 'PIN incorrect' });
+    }
+    const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
+    if (!UI_LANGS.includes(lang)) return res.status(400).json({ error: 'Langue invalide' });
+    let data = { byLang: {}, sourceLang: 'fr', updated: '' };
+    try { data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
+    if (!data.pdfLinks) data.pdfLinks = {};
+    if (bookId.trim()) { data.pdfLinks[lang] = bookId.trim(); } else { delete data.pdfLinks[lang]; }
+    fs.writeFileSync(INFO_FILE, JSON.stringify(data));
+    res.json({ ok: true, pdfLinks: data.pdfLinks });
   } catch (e) {
     res.status(500).json({ error: 'Erreur sauvegarde' });
   }
@@ -1264,8 +1284,7 @@ function slugify(str) {
     .replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
   return base;
 }
-// Retourne un id unique dans la liste : même titre+catégorie+langue => même id (republier = mettre à jour),
-// titre différent mais id identique => suffixe -2, -3… pour ne jamais écraser une autre fiche.
+// Même titre+catégorie+langue => même id (republier = mettre à jour) ; titre différent mais id identique => suffixe -2, -3…
 function makeCatalogId(list, safeCategory, title, lang) {
   let slug = slugify(title);
   if (!slug) slug = 'texte-' + crypto.createHash('md5').update(String(title)).digest('hex').slice(0, 6);
