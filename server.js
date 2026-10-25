@@ -1306,6 +1306,26 @@ app.get('/pdf-manifest', async (req, res) => {
   }
 });
 
+// Proxy de lecture : renvoie un PDF de la bibliothèque (uniquement une URL présente dans le catalogue)
+app.get('/pdf-proxy', async (req, res) => {
+  try {
+    const url = String(req.query.url || '');
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'URL invalide' });
+    const mRes = await fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/pdf-manifest.json?t=${Date.now()}`);
+    const manifest = mRes.ok ? await mRes.json() : { books: [] };
+    if (!(manifest.books || []).some(b => b.url === url)) return res.status(403).json({ error: 'Livre inconnu' });
+    const r = await fetch(url, { redirect: 'follow' });
+    if (!r.ok) return res.status(502).json({ error: 'Source indisponible' });
+    res.setHeader('Content-Type', 'application/pdf');
+    const len = r.headers.get('content-length');
+    if (len) res.setHeader('Content-Length', len);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    r.body.pipe(res);
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: 'Erreur proxy' });
+  }
+});
+
 app.post('/publish-pdf', async (req, res) => {
   try {
     const { title = '', lang = 'fr', type = 'livre', category = '', url = '', pin = '' } = req.body;
