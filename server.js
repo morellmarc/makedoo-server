@@ -319,7 +319,7 @@ app.post('/info-text', async (req, res) => {
 
     let existing = {};
     try { existing = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
-    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {}, pdfLinks: existing.pdfLinks || {} };
+    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {}, pdfLinks: existing.pdfLinks || {}, audioLinks: existing.audioLinks || {}, videoLinks: existing.videoLinks || {} };
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json(data);
   } catch (e) {
@@ -365,6 +365,24 @@ app.post('/info-pdf-link', (req, res) => {
   } catch (e) {
     res.status(500).json({ error: 'Erreur sauvegarde' });
   }
+});
+
+// Sélection de l'écran d'accueil : un texte (pdf), un audio, une vidéo de la bibliothèque par langue d'interface
+app.post('/info-link', (req, res) => {
+  try {
+    const { kind = '', lang = '', id = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    const FIELD = { pdf: 'pdfLinks', audio: 'audioLinks', video: 'videoLinks' }[kind];
+    if (!FIELD) return res.status(400).json({ error: 'Type invalide' });
+    const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
+    if (!UI_LANGS.includes(lang)) return res.status(400).json({ error: 'Langue invalide' });
+    let data = { byLang: {}, sourceLang: 'fr', updated: '' };
+    try { data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
+    if (!data[FIELD]) data[FIELD] = {};
+    if (String(id).trim()) data[FIELD][lang] = String(id).trim(); else delete data[FIELD][lang];
+    fs.writeFileSync(INFO_FILE, JSON.stringify(data));
+    res.json({ ok: true, links: data[FIELD] });
+  } catch (e) { res.status(500).json({ error: 'Erreur sauvegarde' }); }
 });
 
 // ── Authentification par lien magique ────────────────────────────
