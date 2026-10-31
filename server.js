@@ -1268,6 +1268,137 @@ app.post('/audio-rename', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 });
 
+// ── Vidéothèque Makedoo (vidéos YouTube/Vimeo ou fichiers vidéo directs, ex. pCloud) ──
+// Catalogue : video-manifest.json dans le dépôt GitHub de la bibliothèque (créé automatiquement à la première publication)
+const VIDEO_MANIFEST_RAW = () => `https://raw.githubusercontent.com/${GITHUB_REPO}/main/video-manifest.json?t=${Date.now()}`;
+const VIDEO_MANIFEST_API = () => `https://api.github.com/repos/${GITHUB_REPO}/contents/video-manifest.json`;
+const isAdminPin = (pin) => pin === (process.env.INFO_PIN || 'makohrid');
+const safeCat = (s) => String(s || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+
+async function getVideoManifest() {
+  const r = await fetch(VIDEO_MANIFEST_API(), { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
+  if (r.status === 404) return { manifestContent: { version: '1.0', updated: '', categories: [], videos: [] }, sha: undefined };
+  if (!r.ok) throw new Error('Lecture video-manifest.json échouée : ' + r.status);
+  const f = await r.json();
+  const manifestContent = JSON.parse(Buffer.from(f.content, 'base64').toString('utf8'));
+  if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
+  if (!Array.isArray(manifestContent.videos)) manifestContent.videos = [];
+  return { manifestContent, sha: f.sha };
+}
+async function putVideoManifest(manifestContent, sha, message) {
+  manifestContent.updated = new Date().toISOString().split('T')[0];
+  const body = { message, content: Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64') };
+  if (sha) body.sha = sha;
+  const r = await fetch(VIDEO_MANIFEST_API(), {
+    method: 'PUT',
+    headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error('Écriture video-manifest.json échouée : ' + (err.message || r.status)); }
+}
+// Garde commune des routes d'administration de la vidéothèque
+function videoAdmin(handler) {
+  return async (req, res) => {
+    try {
+      if (!isAdminPin((req.body || {}).pin)) return res.status(403).json({ error: 'PIN incorrect' });
+      if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
+      await handler(req, res);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  };
+}
+
+app.get('/video-manifest', async (req, res) => {
+  try {
+    const r = await fetch(VIDEO_MANIFEST_RAW());
+    if (!r.ok) return res.json({ version: '1.0', updated: null, videos: [] });
+    res.json(await r.json());
+  } catch (e) { res.json({ version: '1.0', updated: null, videos: [] }); }
+});
+
+app.get('/video-categories', async (req, res) => {
+  try {
+    const r = await fetch(VIDEO_MANIFEST_RAW());
+    if (!r.ok) return res.json({ categories: [] });
+    const data = await r.json();
+    const categories = Array.isArray(data.categories) ? data.categories.slice() : [];
+    (data.videos || []).forEach(v => { if (v.category && !categories.includes(v.category)) categories.push(v.category); });
+    categories.sort();
+    res.json({ categories });
+  } catch (e) { res.json({ categories: [] }); }
+});
+
+app.post('/publish-video', videoAdmin(async (req, res) => {
+  const { title = '', lang = 'fr', category = '', url = '' } = req.body;
+  if (!title.trim() || !url.trim() || !category.trim()) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
+  if (!/^https?:\/\//i.test(url.trim())) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
+  const cat = safeCat(category);
+  if (!cat) return res.status(400).json({ error: 'Catégorie invalide' });
+  const { manifestContent, sha } = await getVideoManifest();
+  if (!manifestContent.categories.includes(cat)) manifestContent.categories.push(cat);
+  const id = makeCatalogId(manifestContent.videos, cat, title.trim(), lang);
+  manifestContent.videos = manifestContent.videos.filter(v => v.id !== id);
+  manifestContent.videos.push({ id, title: title.trim(), lang, category: cat, url: url.trim() });
+  await putVideoManifest(manifestContent, sha, `Catalogue vidéo : ${title.trim()}`);
+  res.json({ ok: true, id });
+}));
+
+app.post('/video-update', videoAdmin(async (req, res) => {
+  const { id, title, url, lang, category } = req.body;
+  if (!id || !title || !title.trim() || !url || !category || !category.trim()) return res.status(400).json({ error: 'Paramètres manquants (titre, lien, catégorie)' });
+  if (!/^https?:\/\//i.test(url.trim())) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
+  const cat = safeCat(category);
+  if (!cat) return res.status(400).json({ error: 'Catégorie invalide' });
+  const { manifestContent, sha } = await getVideoManifest();
+  const item = manifestContent.videos.find(x => x.id === id);
+  if (!item) return res.status(404).json({ error: 'Fiche introuvable' });
+  item.title = title.trim(); item.url = url.trim(); if (lang) item.lang = lang; item.category = cat;
+  if (!manifestContent.categories.includes(cat)) manifestContent.categories.push(cat);
+  await putVideoManifest(manifestContent, sha, `Modification vidéo : ${id}`);
+  res.json({ ok: true, item });
+}));
+
+app.post('/video-delete', videoAdmin(async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: 'id manquant' });
+  const { manifestContent, sha } = await getVideoManifest();
+  manifestContent.videos = manifestContent.videos.filter(v => v.id !== id);
+  await putVideoManifest(manifestContent, sha, `Suppression vidéo : ${id}`);
+  res.json({ ok: true });
+}));
+
+app.post('/video-category-create', videoAdmin(async (req, res) => {
+  const name = safeCat(req.body.name);
+  if (!name) return res.status(400).json({ error: 'Nom invalide' });
+  const { manifestContent, sha } = await getVideoManifest();
+  if (manifestContent.categories.includes(name)) return res.status(400).json({ error: 'Catégorie déjà existante' });
+  manifestContent.categories.push(name);
+  await putVideoManifest(manifestContent, sha, `Nouvelle catégorie vidéo : ${name}`);
+  res.json({ ok: true, category: name });
+}));
+
+app.post('/video-category-rename', videoAdmin(async (req, res) => {
+  const { oldName } = req.body;
+  const newName = safeCat(req.body.newName);
+  if (!oldName || !newName) return res.status(400).json({ error: 'Paramètres manquants' });
+  const { manifestContent, sha } = await getVideoManifest();
+  if (newName !== oldName && manifestContent.categories.includes(newName)) return res.status(400).json({ error: 'Catégorie déjà existante' });
+  manifestContent.categories = manifestContent.categories.filter(c => c !== oldName);
+  manifestContent.categories.push(newName);
+  manifestContent.videos.forEach(v => { if (v.category === oldName) v.category = newName; });
+  await putVideoManifest(manifestContent, sha, `Renommage catégorie vidéo : ${oldName} → ${newName}`);
+  res.json({ ok: true, category: newName });
+}));
+
+app.post('/video-category-delete', videoAdmin(async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'Nom manquant' });
+  const { manifestContent, sha } = await getVideoManifest();
+  if (manifestContent.videos.some(v => v.category === name)) return res.status(400).json({ error: 'Catégorie non vide — impossible à supprimer' });
+  manifestContent.categories = manifestContent.categories.filter(c => c !== name);
+  await putVideoManifest(manifestContent, sha, `Suppression catégorie vidéo : ${name}`);
+  res.json({ ok: true });
+}));
+
 app.post('/verify-admin-pin', (req, res) => {
   const { pin } = req.body;
   res.json({ ok: pin === (process.env.INFO_PIN || 'makohrid') });
