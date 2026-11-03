@@ -1443,6 +1443,19 @@ function makeCatalogId(list, safeCategory, title, lang) {
   return id;
 }
 
+// Fiche d'un livre (textes PDF uniquement) : auteur, année, descriptif court, lien Amazon
+function cleanBookSheet(body) {
+  const clip = (x, n) => String(x == null ? '' : x).trim().slice(0, n);
+  const amazon = clip(body.amazon, 600);
+  if (amazon && !/^https?:\/\//i.test(amazon)) return { error: 'Le lien Amazon doit être une URL valide (http/https)' };
+  const year = clip(body.year, 12);
+  if (year && !/^[0-9]{3,4}$/.test(year)) return { error: "L'année doit comporter 3 ou 4 chiffres" };
+  return { author: clip(body.author, 160), year, description: clip(body.description, 1200), amazon };
+}
+function applyBookSheet(item, sheet) {
+  ['author', 'year', 'description', 'amazon'].forEach(k => { if (sheet[k]) item[k] = sheet[k]; else delete item[k]; });
+}
+
 // ── Bibliothèque de livres PDF (déjà hébergés sur pCloud) ────────
 app.get('/pdf-manifest', async (req, res) => {
   try {
@@ -1500,7 +1513,11 @@ app.post('/publish-pdf', async (req, res) => {
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     const bookId = makeCatalogId(manifestContent.books, safeCategory, title, lang);
     manifestContent.books = manifestContent.books.filter(b => b.id !== bookId);
-    manifestContent.books.push({ id: bookId, title, lang, type, category: safeCategory, url });
+    const sheet = cleanBookSheet(req.body);
+    if (sheet.error) return res.status(400).json({ error: sheet.error });
+    const newBook = { id: bookId, title, lang, type, category: safeCategory, url };
+    applyBookSheet(newBook, sheet);
+    manifestContent.books.push(newBook);
     manifestContent.updated = new Date().toISOString().split('T')[0];
     const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
     const manifestPutBody = { message: `Catalogue PDF : ${title}`, content: newManifestB64 };
@@ -1655,6 +1672,11 @@ async function updateCatalogItem(kind, req, res) {
     if (type) item.type = type;
     if (lang) item.lang = lang;
     item.category = safeCategory;
+    if (kind === 'pdf' && ['author', 'year', 'description', 'amazon'].some(k => k in req.body)) {
+      const sheet = cleanBookSheet(req.body);
+      if (sheet.error) return res.status(400).json({ error: sheet.error });
+      applyBookSheet(item, sheet);
+    }
     if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     const msg = `Modification ${isAudio ? 'audio' : 'PDF'} : ${id}`;
