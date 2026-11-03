@@ -319,7 +319,7 @@ app.post('/info-text', async (req, res) => {
 
     let existing = {};
     try { existing = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
-    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {}, pdfLinks: existing.pdfLinks || {}, audioLinks: existing.audioLinks || {}, videoLinks: existing.videoLinks || {} };
+    const data = { byLang, sourceLang, updated: new Date().toISOString(), youtubeLinks: existing.youtubeLinks || {}, pdfLinks: existing.pdfLinks || {}, audioLinks: existing.audioLinks || {}, videoLinks: existing.videoLinks || {}, amazonAuthorUrl: existing.amazonAuthorUrl || '', amazonAuthorUrls: existing.amazonAuthorUrls || {} };
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json(data);
   } catch (e) {
@@ -382,6 +382,26 @@ app.post('/info-link', (req, res) => {
     if (String(id).trim()) data[FIELD][lang] = String(id).trim(); else delete data[FIELD][lang];
     fs.writeFileSync(INFO_FILE, JSON.stringify(data));
     res.json({ ok: true, links: data[FIELD] });
+  } catch (e) { res.status(500).json({ error: 'Erreur sauvegarde' }); }
+});
+
+// Liens "Mes livres sur Amazon" (inventaire des textes) : un lien pour l'interface en français, un pour toutes les autres langues (vide = pas de bouton)
+app.post('/info-amazon-link', (req, res) => {
+  try {
+    const { fr = '', en = '', pin = '' } = req.body;
+    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    const urls = {};
+    for (const [k, val] of [['fr', fr], ['en', en]]) {
+      const clean = String(val).trim().slice(0, 600);
+      if (clean && !/^https?:\/\//i.test(clean)) return res.status(400).json({ error: 'Les liens doivent être des URL valides (http/https)' });
+      if (clean) urls[k] = clean;
+    }
+    let data = { byLang: {}, sourceLang: 'fr', updated: '' };
+    try { data = JSON.parse(fs.readFileSync(INFO_FILE, 'utf8')); } catch (e) {}
+    data.amazonAuthorUrls = urls;
+    delete data.amazonAuthorUrl; // ancien lien unique, remplacé
+    fs.writeFileSync(INFO_FILE, JSON.stringify(data));
+    res.json({ ok: true, amazonAuthorUrls: urls });
   } catch (e) { res.status(500).json({ error: 'Erreur sauvegarde' }); }
 });
 
