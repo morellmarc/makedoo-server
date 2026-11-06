@@ -1172,7 +1172,11 @@ app.post('/publish-audio', async (req, res) => {
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     const trackId = makeCatalogId(manifestContent.tracks, safeCategory, title, lang);
     manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
-    manifestContent.tracks.push({ id: trackId, title, lang, type, category: safeCategory, url });
+    const sheet = cleanBookSheet(req.body);
+    if (sheet.error) return res.status(400).json({ error: sheet.error });
+    const newTrack = { id: trackId, title, lang, type, category: safeCategory, url };
+    applyBookSheet(newTrack, sheet);
+    manifestContent.tracks.push(newTrack);
     manifestContent.updated = new Date().toISOString().split('T')[0];
     const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
     const manifestPutBody = { message: `Catalogue audio : ${title}`, content: newManifestB64 };
@@ -1463,7 +1467,7 @@ function makeCatalogId(list, safeCategory, title, lang) {
   return id;
 }
 
-// Fiche d'un livre (textes PDF uniquement) : auteur, année, descriptif court, lien Amazon
+// Fiche d'un livre (textes PDF et audios) : auteur, année, descriptif court, lien Amazon
 function cleanBookSheet(body) {
   const clip = (x, n) => String(x == null ? '' : x).trim().slice(0, n);
   const amazon = clip(body.amazon, 600);
@@ -1692,7 +1696,7 @@ async function updateCatalogItem(kind, req, res) {
     if (type) item.type = type;
     if (lang) item.lang = lang;
     item.category = safeCategory;
-    if (kind === 'pdf' && ['author', 'year', 'description', 'amazon'].some(k => k in req.body)) {
+    if ((kind === 'pdf' || kind === 'audio') && ['author', 'year', 'description', 'amazon'].some(k => k in req.body)) {
       const sheet = cleanBookSheet(req.body);
       if (sheet.error) return res.status(400).json({ error: sheet.error });
       applyBookSheet(item, sheet);
