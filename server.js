@@ -8,6 +8,18 @@ const { Pool } = require('pg');
 const { Resend } = require('resend');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+
+// Code PIN d'administration : uniquement via la variable d'environnement INFO_PIN (Railway).
+// Sans variable définie, toutes les fonctions de gestion restent verrouillées.
+function pinOk(pin) {
+  const expected = process.env.INFO_PIN;
+  if (!expected || typeof pin !== 'string' || !pin) return false;
+  const a = crypto.createHash('sha256').update(pin).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+if (!process.env.INFO_PIN) console.warn('⚠️ INFO_PIN non défini : les fonctions de gestion sont verrouillées.');
+
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY, { apiVersion: '2026-06-24.dahlia' }) : null;
 const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
@@ -288,7 +300,7 @@ app.get('/info-text', (req, res) => {
 app.post('/info-text', async (req, res) => {
   try {
     const { text = '', pin = '', sourceLang = 'fr' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+    if (!pinOk(pin)) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
     const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
@@ -330,7 +342,7 @@ app.post('/info-text', async (req, res) => {
 app.post('/info-youtube-link', (req, res) => {
   try {
     const { lang = '', url = '', pin = '' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+    if (!pinOk(pin)) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
     const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
@@ -351,7 +363,7 @@ app.post('/info-youtube-link', (req, res) => {
 app.post('/info-pdf-link', (req, res) => {
   try {
     const { lang = '', bookId = '', pin = '' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+    if (!pinOk(pin)) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
     const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
@@ -371,7 +383,7 @@ app.post('/info-pdf-link', (req, res) => {
 app.post('/info-link', (req, res) => {
   try {
     const { kind = '', lang = '', id = '', pin = '' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     const FIELD = { pdf: 'pdfLinks', audio: 'audioLinks', video: 'videoLinks' }[kind];
     if (!FIELD) return res.status(400).json({ error: 'Type invalide' });
     const UI_LANGS = ['fr','en','mk','es','de','it','tr','sq','sr','bg','el','pt','ro','hu','pl','nl','ru'];
@@ -389,7 +401,7 @@ app.post('/info-link', (req, res) => {
 app.post('/info-amazon-link', (req, res) => {
   try {
     const { fr = '', en = '', pin = '' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     const urls = {};
     for (const [k, val] of [['fr', fr], ['en', en]]) {
       const clean = String(val).trim().slice(0, 600);
@@ -910,7 +922,7 @@ app.get('/library-manifest', async (req, res) => {
 app.post('/publish-library', async (req, res) => {
   try {
     const { tier = 'gratuit', folder = '', filename = '', session = null, pin = '', newPack = null } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) {
+    if (!pinOk(pin)) {
       return res.status(403).json({ error: 'PIN incorrect' });
     }
     if (!GITHUB_TOKEN) {
@@ -1039,7 +1051,7 @@ async function deleteGithubFile(path, message) {
 app.post('/library-create-pack', async (req, res) => {
   try {
     const { id, tier = 'gratuit', name, description = '', langPair = '', pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!id || !name) return res.status(400).json({ error: 'Identifiant et nom requis' });
     const safeId = id.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1056,7 +1068,7 @@ app.post('/library-create-pack', async (req, res) => {
 app.post('/library-rename-pack', async (req, res) => {
   try {
     const { packId, name, description, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!packId) return res.status(400).json({ error: 'packId manquant' });
     const { manifestUrl, manifestContent, sha } = await getManifest();
@@ -1073,7 +1085,7 @@ app.post('/library-rename-pack', async (req, res) => {
 app.post('/library-delete-pack', async (req, res) => {
   try {
     const { packId, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!packId) return res.status(400).json({ error: 'packId manquant' });
     const { manifestUrl, manifestContent, sha } = await getManifest();
@@ -1100,7 +1112,7 @@ app.post('/library-delete-pack', async (req, res) => {
 app.post('/library-rename-file', async (req, res) => {
   try {
     const { path, newFilename, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!path || !newFilename) return res.status(400).json({ error: 'Paramètres manquants' });
     const safeFile = newFilename.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1126,7 +1138,7 @@ app.post('/library-rename-file', async (req, res) => {
 app.post('/library-delete-file', async (req, res) => {
   try {
     const { path, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!path) return res.status(400).json({ error: 'path manquant' });
     await deleteGithubFile(path, `Suppression fichier : ${path}`);
@@ -1149,7 +1161,7 @@ app.get('/audio-manifest', async (req, res) => {
 app.post('/publish-audio', async (req, res) => {
   try {
     const { title = '', lang = 'fr', type = 'livre', category = '', url = '', pin = '' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
     if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
     if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
@@ -1172,11 +1184,7 @@ app.post('/publish-audio', async (req, res) => {
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     const trackId = makeCatalogId(manifestContent.tracks, safeCategory, title, lang);
     manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
-    const sheet = cleanBookSheet(req.body);
-    if (sheet.error) return res.status(400).json({ error: sheet.error });
-    const newTrack = { id: trackId, title, lang, type, category: safeCategory, url };
-    applyBookSheet(newTrack, sheet);
-    manifestContent.tracks.push(newTrack);
+    manifestContent.tracks.push({ id: trackId, title, lang, type, category: safeCategory, url });
     manifestContent.updated = new Date().toISOString().split('T')[0];
     const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
     const manifestPutBody = { message: `Catalogue audio : ${title}`, content: newManifestB64 };
@@ -1214,7 +1222,7 @@ app.get('/audio-categories', async (req, res) => {
 app.post('/audio-category-create', async (req, res) => {
   try {
     const { name, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!name || !name.trim()) return res.status(400).json({ error: 'Nom manquant' });
     const safeName = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1231,7 +1239,7 @@ app.post('/audio-category-create', async (req, res) => {
 app.post('/audio-category-rename', async (req, res) => {
   try {
     const { oldName, newName, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!oldName || !newName || !newName.trim()) return res.status(400).json({ error: 'Paramètres manquants' });
     const safeNew = newName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1250,7 +1258,7 @@ app.post('/audio-category-rename', async (req, res) => {
 app.post('/audio-category-delete', async (req, res) => {
   try {
     const { name, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!name) return res.status(400).json({ error: 'Nom manquant' });
     const { manifestUrl, manifestContent, sha } = await getAudioManifest();
@@ -1285,7 +1293,7 @@ async function putAudioManifest(manifestUrl, manifestContent, sha, message) {
 app.post('/audio-delete', async (req, res) => {
   try {
     const { trackId, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!trackId) return res.status(400).json({ error: 'trackId manquant' });
     const { manifestUrl, manifestContent, sha } = await getAudioManifest();
@@ -1298,7 +1306,7 @@ app.post('/audio-delete', async (req, res) => {
 app.post('/audio-rename', async (req, res) => {
   try {
     const { trackId, title, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!trackId || !title) return res.status(400).json({ error: 'Paramètres manquants' });
     const { manifestUrl, manifestContent, sha } = await getAudioManifest();
@@ -1314,7 +1322,7 @@ app.post('/audio-rename', async (req, res) => {
 // Catalogue : video-manifest.json dans le dépôt GitHub de la bibliothèque (créé automatiquement à la première publication)
 const VIDEO_MANIFEST_RAW = () => `https://raw.githubusercontent.com/${GITHUB_REPO}/main/video-manifest.json?t=${Date.now()}`;
 const VIDEO_MANIFEST_API = () => `https://api.github.com/repos/${GITHUB_REPO}/contents/video-manifest.json`;
-const isAdminPin = (pin) => pin === (process.env.INFO_PIN || 'makohrid');
+const isAdminPin = (pin) => pinOk(pin);
 const safeCat = (s) => String(s || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
 
 async function getVideoManifest() {
@@ -1443,7 +1451,7 @@ app.post('/video-category-delete', videoAdmin(async (req, res) => {
 
 app.post('/verify-admin-pin', (req, res) => {
   const { pin } = req.body;
-  res.json({ ok: pin === (process.env.INFO_PIN || 'makohrid') });
+  res.json({ ok: pinOk(pin) });
 });
 
 // ── Identifiant de fiche (catalogue PDF / audio) ─────────────────
@@ -1467,7 +1475,7 @@ function makeCatalogId(list, safeCategory, title, lang) {
   return id;
 }
 
-// Fiche d'un livre (textes PDF et audios) : auteur, année, descriptif court, lien Amazon
+// Fiche d'un livre (textes PDF uniquement) : auteur, année, descriptif court, lien Amazon
 function cleanBookSheet(body) {
   const clip = (x, n) => String(x == null ? '' : x).trim().slice(0, n);
   const amazon = clip(body.amazon, 600);
@@ -1515,7 +1523,7 @@ app.get('/pdf-proxy', async (req, res) => {
 app.post('/publish-pdf', async (req, res) => {
   try {
     const { title = '', lang = 'fr', type = 'livre', category = '', url = '', pin = '' } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
     if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
     if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
@@ -1598,7 +1606,7 @@ app.get('/pdf-categories', async (req, res) => {
 app.post('/pdf-category-create', async (req, res) => {
   try {
     const { name, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!name || !name.trim()) return res.status(400).json({ error: 'Nom manquant' });
     const safeName = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1615,7 +1623,7 @@ app.post('/pdf-category-create', async (req, res) => {
 app.post('/pdf-category-rename', async (req, res) => {
   try {
     const { oldName, newName, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!oldName || !newName || !newName.trim()) return res.status(400).json({ error: 'Paramètres manquants' });
     const safeNew = newName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1634,7 +1642,7 @@ app.post('/pdf-category-rename', async (req, res) => {
 app.post('/pdf-category-delete', async (req, res) => {
   try {
     const { name, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!name) return res.status(400).json({ error: 'Nom manquant' });
     const { manifestUrl, manifestContent, sha } = await getPdfManifest();
@@ -1650,7 +1658,7 @@ app.post('/pdf-category-delete', async (req, res) => {
 app.post('/pdf-delete', async (req, res) => {
   try {
     const { bookId, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!bookId) return res.status(400).json({ error: 'bookId manquant' });
     const { manifestUrl, manifestContent, sha } = await getPdfManifest();
@@ -1663,7 +1671,7 @@ app.post('/pdf-delete', async (req, res) => {
 app.post('/pdf-rename', async (req, res) => {
   try {
     const { bookId, title, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!bookId || !title) return res.status(400).json({ error: 'Paramètres manquants' });
     const { manifestUrl, manifestContent, sha } = await getPdfManifest();
@@ -1680,7 +1688,7 @@ app.post('/pdf-rename', async (req, res) => {
 async function updateCatalogItem(kind, req, res) {
   try {
     const { id, title, url, type, lang, category, pin } = req.body;
-    if (pin !== (process.env.INFO_PIN || 'makohrid')) return res.status(403).json({ error: 'PIN incorrect' });
+    if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré' });
     if (!id || !title || !title.trim() || !url || !category || !category.trim()) return res.status(400).json({ error: 'Paramètres manquants (titre, lien, catégorie)' });
     if (!/^https?:\/\//i.test(url.trim())) return res.status(400).json({ error: 'Le lien doit être une URL valide (http/https)' });
@@ -1696,7 +1704,7 @@ async function updateCatalogItem(kind, req, res) {
     if (type) item.type = type;
     if (lang) item.lang = lang;
     item.category = safeCategory;
-    if ((kind === 'pdf' || kind === 'audio') && ['author', 'year', 'description', 'amazon'].some(k => k in req.body)) {
+    if (kind === 'pdf' && ['author', 'year', 'description', 'amazon'].some(k => k in req.body)) {
       const sheet = cleanBookSheet(req.body);
       if (sheet.error) return res.status(400).json({ error: sheet.error });
       applyBookSheet(item, sheet);
