@@ -1161,6 +1161,9 @@ app.get('/audio-manifest', async (req, res) => {
 app.post('/publish-audio', async (req, res) => {
   try {
     const { title = '', lang = 'fr', type = 'livre', category = '', url = '', pin = '' } = req.body;
+    const audioMeta = cleanBookSheet(req.body); // auteur et année (facultatifs) ; descriptif et lien Amazon ne concernent que les textes
+    if (audioMeta.error) return res.status(400).json({ error: audioMeta.error });
+    audioMeta.description = ''; audioMeta.amazon = '';
     if (!pinOk(pin)) return res.status(403).json({ error: 'PIN incorrect' });
     if (!GITHUB_TOKEN) return res.status(500).json({ error: 'GITHUB_TOKEN non configuré sur le serveur' });
     if (!title || !url || !category) return res.status(400).json({ error: 'Paramètres manquants (titre, catégorie, lien)' });
@@ -1184,7 +1187,9 @@ app.post('/publish-audio', async (req, res) => {
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
     const trackId = makeCatalogId(manifestContent.tracks, safeCategory, title, lang);
     manifestContent.tracks = manifestContent.tracks.filter(tr => tr.id !== trackId);
-    manifestContent.tracks.push({ id: trackId, title, lang, type, category: safeCategory, url });
+    const newTrack = { id: trackId, title, lang, type, category: safeCategory, url };
+    applyBookSheet(newTrack, audioMeta);
+    manifestContent.tracks.push(newTrack);
     manifestContent.updated = new Date().toISOString().split('T')[0];
     const newManifestB64 = Buffer.from(JSON.stringify(manifestContent, null, 2)).toString('base64');
     const manifestPutBody = { message: `Catalogue audio : ${title}`, content: newManifestB64 };
@@ -1708,6 +1713,12 @@ async function updateCatalogItem(kind, req, res) {
       const sheet = cleanBookSheet(req.body);
       if (sheet.error) return res.status(400).json({ error: sheet.error });
       applyBookSheet(item, sheet);
+    }
+    if (kind === 'audio' && ['author', 'year'].some(k => k in req.body)) {
+      const meta = cleanBookSheet(req.body);
+      if (meta.error) return res.status(400).json({ error: meta.error });
+      meta.description = ''; meta.amazon = '';
+      applyBookSheet(item, meta);
     }
     if (!Array.isArray(manifestContent.categories)) manifestContent.categories = [];
     if (!manifestContent.categories.includes(safeCategory)) manifestContent.categories.push(safeCategory);
